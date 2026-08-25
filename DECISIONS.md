@@ -1,23 +1,12 @@
 # Decisions
 
-Append-only log of non-obvious calls: scope boundaries, rejected approaches,
-and anything a future session would otherwise redo or re-litigate.
+log of calls that aren't obvious from the code, so future-me doesn't redo or re-litigate them.
 
-## 2026-08-25 — M0 tooling choices
+## 2026-08-25 — M0 tooling
 
-- **Build backend: hatchling.** No compiled extensions, nothing exotic;
-  hatchling is a light, standard choice for a `src/` layout package.
-- **`numpy` and `pyarrow` as core runtime deps; `scikit-learn` behind
-  `mekiki[coverage]`.** Per the project brief, core stays under six
-  dependencies and torch/heavy ML never becomes a runtime requirement.
-  Coverage analysis (M7) is the first place density estimation is likely to
-  want sklearn — deferred there as an extra, not core.
-- **CLI entry point (`mekiki.cli:main`) stubbed in M0, not deferred to M5.**
-  Packaging and entry-point wiring are cheap to get right early and cheap to
-  regression-test; the actual subcommands (`audit`, `report`, `coverage`)
-  still land in M5 as planned.
-- **License: Apache-2.0**, matching the robotics ecosystem norm, fetched
-  verbatim from apache.org rather than paraphrased.
+- build backend: hatchling. nothing exotic, no compiled bits, standard `src/` layout.
+- numpy + pyarrow only in core deps. scikit-learn goes behind `mekiki[coverage]` once M7 needs density estimation — core stays under six deps, torch never becomes a runtime dep.
+- CLI entry point (`mekiki.cli:main`) stubbed now instead of waiting for M5. packaging/entry-point wiring is cheap to get right early and cheap to test; real subcommands still land in M5.
+- license: apache-2.0, matches the robotics ecosystem norm, pulled verbatim from apache.org.
 
-<!-- Log IP-BOUNDARY entries here whenever a session drifts toward CI
-     gating, verdicts, or safety-evaluation territory and gets reverted. -->
+<!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->

@@ -1,46 +1,22 @@
 # Roadmap
 
-Reorder as we learn. Delete nothing without a note in [DECISIONS.md](DECISIONS.md).
+reorder whenever, don't delete anything without a note in [DECISIONS.md](DECISIONS.md).
 
-- [x] **M0 — Foundation.** Repo skeleton, `pyproject.toml`, ruff + mypy +
-      pytest, GitHub Actions, pre-commit, Apache-2.0 license, README stub.
-- [ ] **M1 — Episode abstraction.** A common in-memory representation:
-      timestamped observations, actions, proprioception, camera streams,
-      metadata. Readers for LeRobotDataset and RLDS/Open X-Embodiment. Write
-      `docs/episode.md` before any code — get action space conventions,
-      delta-vs-absolute, and frame handling right here, because everything
-      downstream inherits these choices. Pull one small public dataset and
-      make it round-trip before moving on.
-      - [ ] `docs/episode.md`: action space conventions, delta-vs-absolute,
-            frame/coordinate handling.
-      - [ ] `Episode` / `Frame` core dataclasses (typed, immutable where
-            practical), streaming-friendly.
-      - [ ] LeRobotDataset reader, round-tripped against one small public
-            dataset.
-      - [ ] RLDS / Open X-Embodiment reader.
-- [ ] **M2 — Temporal integrity.** Dropped frames, non-monotonic timestamps,
-      control frequency jitter, cross-stream desync between cameras and
-      proprioception.
-- [ ] **M3 — Action-state consistency (flagship).** Forward-integrate
-      commanded actions, compare against recorded proprioception, report
-      residuals in physical units. Write `docs/consistency.md` first,
-      including how tolerance scales with control frequency and robot type.
-- [ ] **M4 — Idle and segmentation.** Operator hesitation, pre-motion dead
-      time, post-task dwell. Report recoverable fraction per episode.
-- [ ] **M5 — Report and CLI.** `mekiki audit`, `mekiki report`. Per-episode
-      scorecards plus corpus-level summary.
-- [ ] **M6 — Visual checks.** Dead/frozen streams, workspace occlusion,
-      exposure failure, camera pose drift. Classical CV only in core.
-- [ ] **M7 — Coverage analysis (flagship).** Embed the state-action space,
-      estimate density, report sparse regions in actionable terms.
-- [ ] **M8 — Near-duplicate detection.** Repeated demos, autonomous rollouts
-      mislabeled as human demos, scripted resets counted as episodes.
-- [ ] **M9 — Filter and export.** Apply a policy, write filtered LeRobot
-      output with full provenance of what was dropped and why.
-- [ ] **M10 — Docs site.** Quickstart against a real public dataset, under
-      five minutes.
-- [ ] **M11 — Public release and the corpus audit.** PyPI + writeup: run
-      mekiki across major open datasets, publish the numbers, invite
-      correction.
-- [ ] **M12 — Training-impact proof (capstone).** Train filtered vs.
-      unfiltered on a public benchmark (LIBERO or similar), publish the delta.
+- [x] M0 — repo skeleton: pyproject, ruff/mypy/pytest, CI, pre-commit, apache-2.0, readme stub. done.
+- [ ] M1 — episode abstraction. one in-memory rep for timestamped observations, actions, proprio, camera streams, metadata. readers for LeRobotDataset and RLDS/Open X-Embodiment.
+      write `docs/episode.md` first — action space conventions, delta vs absolute, frame handling all get decided here and everything downstream inherits it. pull one small public dataset and round-trip it before moving on.
+      - [ ] `docs/episode.md`
+      - [ ] `Episode` / `Frame` dataclasses, typed, streaming-friendly
+      - [ ] LeRobotDataset reader, round-tripped against a small public dataset
+      - [ ] RLDS / Open X-Embodiment reader
+- [ ] M2 — temporal integrity. dropped frames, non-monotonic timestamps, control freq jitter, camera/proprio desync.
+- [ ] M3 — action-state consistency (the flagship one). forward-integrate commanded actions, diff against recorded proprio, report residuals in real units. `docs/consistency.md` first — tolerance has to scale with control freq and robot type, don't rush it.
+- [ ] M4 — idle + segmentation. hesitation, pre-motion dead time, post-task dwell. report recoverable fraction per episode.
+- [ ] M5 — report + CLI. `mekiki audit`, `mekiki report`. per-episode scorecards + corpus summary.
+- [ ] M6 — visual checks. dead/frozen streams, occlusion, exposure failure, camera drift. classical CV only, no learned models in core.
+- [ ] M7 — coverage analysis (the other flagship). embed the state-action space, estimate density, report sparse regions in plain language.
+- [ ] M8 — near-duplicate detection. repeated demos, autonomous rollouts mislabeled as human, scripted resets counted as episodes.
+- [ ] M9 — filter + export. apply a policy, write filtered LeRobot output, keep full provenance of what got dropped and why.
+- [ ] M10 — docs site. quickstart against a real dataset, under 5 min.
+- [ ] M11 — public release + corpus audit. pypi + a writeup running mekiki across the major open datasets, numbers published even where unflattering.
+- [ ] M12 — training-impact proof. train filtered vs unfiltered on a public benchmark (LIBERO or similar), publish the delta.
