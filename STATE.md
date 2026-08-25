@@ -38,9 +38,17 @@ cleanly.
   needs network access to Hugging Face (or wherever LeRobotDataset examples
   are hosted) and some non-trivial disk space. Check that's available before
   committing to a specific dataset in `docs/episode.md`.
-- GitHub remote does not exist yet (local repo only, no `origin`). CI won't
-  actually run until this is pushed somewhere. Not urgent — no reason to
-  create a remote until there's a reason to push.
+- ~~GitHub remote does not exist yet~~ — resolved: pushed to
+  `origin` (https://github.com/bradsward/mekiki), CI now runs on push.
+
+## Recommendations
+
+Open ideas noticed in passing that fall outside the current session's one
+task. Each needs an explicit approve/deny before anyone acts on it — prune an
+entry once it's been decided one way or the other so this list never goes
+stale.
+
+- none yet
 
 ## Log
 
