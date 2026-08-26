@@ -7,11 +7,11 @@ reorder whenever, don't delete anything without a note in [DECISIONS.md](DECISIO
       write `docs/episode.md` first — action space conventions, delta vs absolute, frame handling all get decided here and everything downstream inherits it. pull one small public dataset and round-trip it before moving on.
       - [x] `docs/episode.md`
       - [x] `Episode` / `Frame` dataclasses, typed, streaming-friendly
-      - [ ] LeRobotDataset reader, round-tripped against a small public dataset
-        - [x] `meta/info.json` parsing + episode index (`meta/episodes/**.parquet`) — checked against a real dataset (`lerobot/pusht`)
+      - [x] LeRobotDataset reader, round-tripped against a small public dataset (`lerobot/pusht`, 206/206 episodes, 25650/25650 frames match)
+        - [x] `meta/info.json` parsing + episode index (`meta/episodes/**.parquet`)
         - [x] action-space fail-loud gate: info.json never declares delta-vs-absolute/unit/frame, so a caller-supplied `ActionSpaceSpec` is required and validated against the actual action dimensionality
-        - [ ] frame-data parquet reading (`data/**.parquet`) into actual `Frame`/`Proprioception` objects — blocked on the Proprioception-shape question in STATE.md's recommendations
-        - [ ] camera frame decoding (real datasets use video-encoded cameras, e.g. av1 — needs a decode dependency, deferred)
+        - [x] frame-data parquet reading (`data/**.parquet`) into `Frame`/`Proprioception` — unlabeled state columns go to `Proprioception.extra` rather than being guessed into joints/ee/gripper
+        - [ ] camera pixel decoding — real datasets use video-encoded cameras (e.g. av1); `CameraFrame` correctly represents that a camera exists (name, resolution) but `.read()` raises `NotImplementedError` until a decode dependency is added. deliberately deferred to whenever a check first needs actual pixels (M6 at the latest).
       - [ ] RLDS / Open X-Embodiment reader
 - [ ] M2 — temporal integrity. dropped frames, non-monotonic timestamps, control freq jitter, camera/proprio desync.
 - [ ] M3 — action-state consistency (the flagship one). forward-integrate commanded actions, diff against recorded proprio, report residuals in real units. `docs/consistency.md` first — tolerance has to scale with control freq and robot type, don't rush it.

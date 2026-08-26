@@ -19,6 +19,7 @@ import pytest
 from mekiki.episode import ActionDimSpec
 from mekiki.readers.lerobot import (
     read_episode_refs,
+    read_episodes,
     read_info,
     validate_action_space,
 )
@@ -32,8 +33,11 @@ _ACTION_SPACE = (
 def _write_dataset(root: Path, *, action_dims: int = 2) -> None:
     """Build a minimal on-disk LeRobotDataset directory for testing.
 
-    Two episodes, no video files and no frame-data parquet — this reader
-    only touches ``meta/info.json`` and ``meta/episodes/**.parquet`` so far.
+    Two episodes (3 frames + 2 frames), one non-video state column
+    (deliberately unlabeled, like a real dataset's ``observation.state``)
+    and one video-backed camera feature, so both the "state goes to
+    Proprioception.extra" and "camera exists but isn't decoded" paths get
+    exercised.
     """
     meta_dir = root / "meta"
     meta_dir.mkdir(parents=True)
@@ -49,6 +53,11 @@ def _write_dataset(root: Path, *, action_dims: int = 2) -> None:
         "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
         "features": {
             "observation.state": {"dtype": "float32", "shape": [action_dims]},
+            "observation.image": {
+                "dtype": "video",
+                "shape": [64, 64, 3],
+                "names": ["height", "width", "channel"],
+            },
             "action": {"dtype": "float32", "shape": [action_dims]},
         },
     }
@@ -56,7 +65,7 @@ def _write_dataset(root: Path, *, action_dims: int = 2) -> None:
 
     episodes_dir = meta_dir / "episodes" / "chunk-000"
     episodes_dir.mkdir(parents=True)
-    table = pa.table(
+    episodes_table = pa.table(
         {
             "episode_index": [0, 1],
             "data/chunk_index": [0, 0],
@@ -64,10 +73,26 @@ def _write_dataset(root: Path, *, action_dims: int = 2) -> None:
             "dataset_from_index": [0, 3],
             "dataset_to_index": [3, 5],
             "length": [3, 2],
-            "tasks": [["pick up the cube"], ["pick up the cube"]],
+            "tasks": [["pick up the cube"], ["place the cube"]],
         }
     )
-    pq.write_table(table, episodes_dir / "file-000.parquet")
+    pq.write_table(episodes_table, episodes_dir / "file-000.parquet")
+
+    data_dir = root / "data" / "chunk-000"
+    data_dir.mkdir(parents=True)
+    data_table = pa.table(
+        {
+            "observation.state": [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [10.0, 10.0], [11.0, 11.0]],
+            "action": [[0.1, 0.1], [1.1, 1.1], [2.1, 2.1], [10.1, 10.1], [11.1, 11.1]],
+            "episode_index": [0, 0, 0, 1, 1],
+            "frame_index": [0, 1, 2, 0, 1],
+            "timestamp": [0.0, 0.1, 0.2, 0.0, 0.1],
+            "next.success": [False, False, True, False, True],
+            "index": [0, 1, 2, 3, 4],
+            "task_index": [0, 0, 0, 1, 1],
+        }
+    )
+    pq.write_table(data_table, data_dir / "file-000.parquet")
 
 
 @pytest.fixture
@@ -143,3 +168,59 @@ def test_read_episode_refs_returns_all_episodes_in_order(dataset_dir: Path) -> N
 def test_read_episode_refs_missing_directory_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="episode index"):
         read_episode_refs(tmp_path)
+
+
+def test_read_episodes_yields_expected_episode_and_frame_counts(dataset_dir: Path) -> None:
+    episodes = list(read_episodes(dataset_dir, _ACTION_SPACE))
+    assert len(episodes) == 2
+    assert [len(list(ep)) for ep in episodes] == [3, 2]
+
+
+def test_read_episodes_frame_boundaries_and_timestamps(dataset_dir: Path) -> None:
+    first_episode = next(iter(read_episodes(dataset_dir, _ACTION_SPACE)))
+    frames = list(first_episode)
+    assert frames[0].is_first and not frames[0].is_last
+    assert frames[-1].is_last and not frames[-1].is_first
+    assert [f.timestamp for f in frames] == pytest.approx([0.0, 0.1, 0.2])
+
+
+def test_read_episodes_unlabeled_state_goes_to_extra_not_guessed(dataset_dir: Path) -> None:
+    first_episode = next(iter(read_episodes(dataset_dir, _ACTION_SPACE)))
+    frame = next(iter(first_episode))
+    assert frame.proprioception.joint_positions is None
+    assert frame.proprioception.ee_poses == {}
+    assert frame.proprioception.grippers == {}
+    assert frame.proprioception.extra["observation.state"].tolist() == [0.0, 0.0]
+
+
+def test_read_episodes_action_matches_action_space_length(dataset_dir: Path) -> None:
+    first_episode = next(iter(read_episodes(dataset_dir, _ACTION_SPACE)))
+    frame = next(iter(first_episode))
+    assert frame.action.shape == (len(_ACTION_SPACE),)
+    assert frame.action.tolist() == pytest.approx([0.1, 0.1])
+
+
+def test_read_episodes_success_only_set_on_last_frame(dataset_dir: Path) -> None:
+    first_episode = next(iter(read_episodes(dataset_dir, _ACTION_SPACE)))
+    frames = list(first_episode)
+    assert [f.success for f in frames] == [None, None, True]
+
+
+def test_read_episodes_language_instruction_from_episode_tasks(dataset_dir: Path) -> None:
+    episodes = list(read_episodes(dataset_dir, _ACTION_SPACE))
+    assert all(f.language_instruction == "pick up the cube" for f in episodes[0])
+    assert all(f.language_instruction == "place the cube" for f in episodes[1])
+
+
+def test_read_episodes_camera_present_but_undecoded(dataset_dir: Path) -> None:
+    first_episode = next(iter(read_episodes(dataset_dir, _ACTION_SPACE)))
+    frame = next(iter(first_episode))
+    camera = frame.images["observation.image"]
+    assert camera.resolution == (64, 64)
+    with pytest.raises(NotImplementedError, match=r"observation\.image"):
+        camera.read()
+
+
+def test_read_episodes_rejects_missing_action_space(dataset_dir: Path) -> None:
+    with pytest.raises(ValueError, match="no action_space supplied"):
+        list(read_episodes(dataset_dir, None))  # type: ignore[arg-type]
