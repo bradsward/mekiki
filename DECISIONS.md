@@ -23,4 +23,8 @@ The original `Proprioception` (joint_positions + one ee_pose + one gripper, all 
 
 Went with: every field optional, `ee_poses`/`grippers` keyed by short names (`"ee"`, or `"left"`/`"right"`) so the same type covers zero/one/two end-effectors, plus an `extra: dict[str, NDArray]` escape hatch for state that isn't joints/pose/gripper shaped at all (PushT's raw 2D position lives there). `extra` carries no assumed unit or frame — it's explicitly the "we don't know what this is" bucket, not a default path. `docs/episode.md` and `src/mekiki/episode.py` both updated together so they don't drift.
 
+## 2026-08-26 — LeRobotDataset reader now rejects unsupported codebase_version
+
+Checked real RLDS/OXE data before writing a reader for it (see `docs/rlds.md`) and found, along the way, that `IPEC-COMMUNITY/bridge_orig_lerobot` — the actual Bridge V2 dataset this project's README uses as its example — is LeRobotDataset `codebase_version: "v2.0"`, not `"v3.0"` like the only dataset the reader had been checked against (`lerobot/pusht`). v2.x uses a different on-disk layout entirely (`meta/episodes.jsonl`, not `meta/episodes/**.parquet`). The reader would have failed on it, but with a generic "no episode index parquet files" error that doesn't say why — confusing, not wrong, but not the fail-loudly-with-a-clear-reason standard the rest of this reader holds itself to. Added an explicit `codebase_version` check in `read_info` that names the real problem and points at `docs/rlds.md`. Verified against the real `bridge_orig_lerobot` info.json, not just a synthetic fixture.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->

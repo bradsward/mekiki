@@ -115,6 +115,29 @@ def test_read_info_missing_directory_raises() -> None:
         read_info(Path("does/not/exist"))
 
 
+def test_read_info_rejects_unsupported_codebase_version(tmp_path: Path) -> None:
+    # e.g. LeRobotDataset v2.x: a real, common case (see docs/rlds.md), not
+    # a hypothetical one -- must fail clearly, not silently misread.
+    meta_dir = tmp_path / "meta"
+    meta_dir.mkdir()
+    (meta_dir / "info.json").write_text(
+        json.dumps(
+            {
+                "codebase_version": "v2.0",
+                "fps": 10,
+                "total_episodes": 1,
+                "total_frames": 1,
+                "data_path": "",
+                "video_path": "",
+                "features": {"action": {"dtype": "float32", "shape": [2]}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=r"v2\.0"):
+        read_info(tmp_path)
+
+
 def test_read_info_missing_action_feature_raises(tmp_path: Path) -> None:
     meta_dir = tmp_path / "meta"
     meta_dir.mkdir()

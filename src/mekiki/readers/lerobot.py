@@ -102,7 +102,16 @@ def read_info(dataset_dir: Path) -> LeRobotInfo:
             ``dataset_dir``.
         ValueError: The file exists but is missing the ``"action"``
             feature, or that feature has no usable shape — this reader has
-            nothing to validate an action space against in that case.
+            nothing to validate an action space against in that case. Also
+            raised if ``codebase_version`` isn't one this reader has been
+            checked against — see `SUPPORTED_CODEBASE_VERSIONS`. LeRobotDataset
+            v2.x uses a materially different on-disk layout (a flat
+            ``meta/episodes.jsonl`` instead of ``meta/episodes/**.parquet``);
+            reading it with this reader would fail confusingly downstream
+            rather than tell you why, so this checks and fails clearly
+            instead — a real, common case: e.g.
+            ``IPEC-COMMUNITY/bridge_orig_lerobot`` on the Hugging Face Hub
+            (this project's own README example dataset) is ``v2.0``.
 
     Example:
         >>> from pathlib import Path
@@ -116,6 +125,16 @@ def read_info(dataset_dir: Path) -> LeRobotInfo:
             f"no meta/info.json under {dataset_dir} — is this a LeRobotDataset directory?"
         )
     raw: dict[str, Any] = json.loads(info_path.read_text(encoding="utf-8"))
+    codebase_version = raw["codebase_version"]
+    if codebase_version not in SUPPORTED_CODEBASE_VERSIONS:
+        raise ValueError(
+            f"{info_path} reports codebase_version {codebase_version!r}, but this reader "
+            f"has only been checked against {SUPPORTED_CODEBASE_VERSIONS!r}. LeRobotDataset "
+            "v2.x uses a different on-disk layout (meta/episodes.jsonl, not "
+            "meta/episodes/**.parquet) that this reader doesn't understand yet — "
+            "see docs/rlds.md. Reading it further here would risk silently misreading "
+            "rather than failing clearly, so this stops now instead."
+        )
     features: dict[str, dict[str, Any]] = raw["features"]
     action_feature = features.get("action")
     if action_feature is None or "shape" not in action_feature:

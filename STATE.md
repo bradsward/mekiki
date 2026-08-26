@@ -20,9 +20,10 @@ repo lives at github.com/bradsward/mekiki, private. ruff check, ruff format --ch
 
 camera pixels are the one thing still not real: `Frame.images` correctly reports that a camera exists (name, resolution) but `.read()` raises `NotImplementedError` — real LeRobotDataset cameras are video-encoded (pusht's is av1-in-mp4) and mekiki has no decoder yet. Deliberately deferred rather than half-built; see recommendations.
 
+checked RLDS/Open X-Embodiment's real format before writing a reader for it (per the open question below) — findings written up properly in `docs/rlds.md` rather than just here, since it's real research worth keeping. Short version: it's genuinely more work and a heavier dependency than LeRobotDataset was. Two things came out of that check that change next steps — both below.
+
 ## open questions / risks
 
-- haven't looked at RLDS/Open X-Embodiment's real on-disk schema yet — no reason to assume it's any closer to what `docs/episode.md` expects than LeRobotDataset turned out to be. check before writing that reader, same way this session checked LeRobotDataset instead of assuming.
 - numpy is pinned to `<2.4` (see DECISIONS.md) purely because of a mypy/stub incompatibility — not a real dependency conflict. Remember to reconsider that pin once mypy catches up, so it doesn't quietly linger for years.
 
 ## recommendations
@@ -30,6 +31,9 @@ camera pixels are the one thing still not real: `Frame.images` correctly reports
 ideas noticed in passing, outside whatever the session's actual task was. need an explicit yes/no before anything happens on them — prune once decided so this doesn't pile up.
 
 - **Camera frames in real LeRobotDataset entries are video-encoded** (the pusht cameras are av1-in-mp4), not raw arrays in parquet. Decoding needs a real dependency (something like PyAV) that isn't installed yet. Not blocking anything else in M1 (metadata/state/action all work without it) — flagging so it's a deliberate addition whenever a check first needs actual pixels, rather than something that sneaks in.
+- **RLDS-native decoding needs `tensorflow`/`tensorflow_datasets` — a dependency in the same weight class as the torch dependency this project already refuses to make core.** Full findings in `docs/rlds.md`: the format is TFRecord-wrapped TFDS serialization, nested/sequence-encoded in a way that isn't independently documented — reading it correctly without TF itself means hand-rolling a decoder with nothing to validate it against, which is a bad idea for a tool whose whole job is catching silent data corruption. If RLDS-native support happens, the sane path is a `mekiki[rlds]` extra (mirroring `mekiki[coverage]`) that pulls in `tensorflow_datasets`, never core. Want your sign-off on that dependency before it lands, same as the Proprioception call.
+- **Open X-Embodiment may not need the native RLDS reader at all, or at least not soon.** Most/all OXE datasets already have community LeRobotDataset conversions on the Hugging Face Hub — including `IPEC-COMMUNITY/bridge_orig_lerobot`, which is literally this project's own README's `bridge_v2` example. If that's an acceptable path to real OXE data, RLDS-native work could drop in priority (or off the board entirely) in favor of the LeRobotDataset v2.x item below, which reaches the same data with no new heavy dependency. Reordered `ROADMAP.md` to put v2.x support ahead of the RLDS reader on that basis, since reordering is pre-authorized — but skipping RLDS-native entirely is a bigger call than a reorder and still needs your word.
+- **LeRobotDataset v2.x (a different on-disk layout, not v3.0) is real and common** — checked several Hub mirrors, `v2.0`/`v2.1` outnumbered `v3.0` among the ones sampled, including `bridge_orig_lerobot`. The reader now fails loudly and clearly on it (`read_info` checks `codebase_version`, verified against the real file) rather than the confusing generic error it would've thrown before — but nothing about actually *reading* v2.x is built yet. That's the concrete next coding task on the reader, not a recommendation; added to `ROADMAP.md`.
 
 ## log
 
@@ -40,3 +44,4 @@ ideas noticed in passing, outside whatever the session's actual task was. need a
 2026-08-25 · M1 · LeRobotDataset info/episode-index reader + action-space gate, checked against real lerobot/pusht data · next: resolve Proprioception-shape question (see recommendations), then frame-data reading
 2026-08-25 · M1 · generalized Proprioception for bimanual/no-arm state (dict-keyed ee_poses/grippers, extra escape hatch) · next: frame-data parquet reading in the LeRobotDataset reader
 2026-08-26 · M1 · LeRobotDataset reader now builds real Frame/Proprioception objects, verified end-to-end against lerobot/pusht (206 episodes, 25650 frames) · next: RLDS/Open X-Embodiment reader, or camera decoding if that becomes urgent first
+2026-08-26 · M1 · researched real RLDS/OXE format (docs/rlds.md), added codebase_version guard after finding real data (bridge_orig_lerobot) is LeRobotDataset v2.x not v3.0 · next: your call on the RLDS-native/dependency recommendations, then LeRobotDataset v2.x support
