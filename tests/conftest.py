@@ -71,12 +71,15 @@ def make_clean_frame(
         proprioception=Proprioception(
             joint_positions=np.zeros(7, dtype=np.float64),
             joint_velocities=np.zeros(7, dtype=np.float64),
-            ee_pose=Pose(
-                position=np.array([timestamp * step, 0.0, 0.2], dtype=np.float64),
-                orientation=_identity_quaternion(),
-                frame="base_link",
-            ),
-            gripper=1.0,
+            ee_poses={
+                "ee": Pose(
+                    position=np.array([timestamp * step, 0.0, 0.2], dtype=np.float64),
+                    orientation=_identity_quaternion(),
+                    frame="base_link",
+                )
+            },
+            grippers={"ee": 1.0},
+            extra={},
         ),
         action=action,
         images={

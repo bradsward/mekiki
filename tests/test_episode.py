@@ -62,12 +62,15 @@ def test_proprioception_rejects_out_of_range_gripper() -> None:
         Proprioception(
             joint_positions=np.zeros(7, dtype=np.float64),
             joint_velocities=None,
-            ee_pose=Pose(
-                position=np.zeros(3, dtype=np.float64),
-                orientation=np.array([0.0, 0.0, 0.0, 1.0]),
-                frame="base_link",
-            ),
-            gripper=1.5,
+            ee_poses={
+                "ee": Pose(
+                    position=np.zeros(3, dtype=np.float64),
+                    orientation=np.array([0.0, 0.0, 0.0, 1.0]),
+                    frame="base_link",
+                )
+            },
+            grippers={"ee": 1.5},
+            extra={},
         )
 
 
@@ -75,14 +78,49 @@ def test_proprioception_allows_missing_velocities() -> None:
     prop = Proprioception(
         joint_positions=np.zeros(7, dtype=np.float64),
         joint_velocities=None,
-        ee_pose=Pose(
-            position=np.zeros(3, dtype=np.float64),
-            orientation=np.array([0.0, 0.0, 0.0, 1.0]),
-            frame="base_link",
-        ),
-        gripper=0.0,
+        ee_poses={
+            "ee": Pose(
+                position=np.zeros(3, dtype=np.float64),
+                orientation=np.array([0.0, 0.0, 0.0, 1.0]),
+                frame="base_link",
+            )
+        },
+        grippers={"ee": 0.0},
+        extra={},
     )
     assert prop.joint_velocities is None
+
+
+def test_proprioception_allows_no_arm_shape_at_all() -> None:
+    # e.g. PushT: a 2D pusher position, no joints/ee/gripper at all
+    prop = Proprioception(
+        joint_positions=None,
+        joint_velocities=None,
+        ee_poses={},
+        grippers={},
+        extra={"observation.state": np.array([222.0, 97.0], dtype=np.float64)},
+    )
+    assert prop.joint_positions is None
+    assert prop.ee_poses == {}
+    assert prop.grippers == {}
+    assert prop.extra["observation.state"].shape == (2,)
+
+
+def test_proprioception_supports_bimanual_ee_and_grippers() -> None:
+    pose = Pose(
+        position=np.zeros(3, dtype=np.float64),
+        orientation=np.array([0.0, 0.0, 0.0, 1.0]),
+        frame="base_link",
+    )
+    prop = Proprioception(
+        joint_positions=np.zeros(14, dtype=np.float64),
+        joint_velocities=None,
+        ee_poses={"left": pose, "right": pose},
+        grippers={"left": 1.0, "right": 0.0},
+        extra={},
+    )
+    assert set(prop.ee_poses) == {"left", "right"}
+    assert set(prop.grippers) == {"left", "right"}
 
 
 def test_camera_frame_read_is_lazy() -> None:

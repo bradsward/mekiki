@@ -17,4 +17,10 @@ log of calls that aren't obvious from the code, so future-me doesn't redo or re-
 
 pyarrow ships no `py.typed` marker and no inline types, so `mypy --strict` fails on the import itself, not on our code. `pyarrow-stubs` exists but its published versions (up to 20.x) trail our installed pyarrow (25.x) enough that pulling it in seemed like its own maintenance burden for a package we use narrowly. Added a scoped override (`[[tool.mypy.overrides]]` for `pyarrow.*`, `ignore_missing_imports = true`) instead — our own code touching pyarrow still gets checked, just not pyarrow's internals.
 
+## 2026-08-25 — Proprioception generalized past single-arm-with-gripper
+
+The original `Proprioception` (joint_positions + one ee_pose + one gripper, all required) broke on real data faster than expected — not just on non-arm tasks like PushT, but on bimanual arms too (ALOHA-style setups have two end-effectors and two grippers, which is mainstream in Open X-Embodiment, not an edge case). A rigid single-arm shape would've needed redesigning again the moment a bimanual dataset showed up.
+
+Went with: every field optional, `ee_poses`/`grippers` keyed by short names (`"ee"`, or `"left"`/`"right"`) so the same type covers zero/one/two end-effectors, plus an `extra: dict[str, NDArray]` escape hatch for state that isn't joints/pose/gripper shaped at all (PushT's raw 2D position lives there). `extra` carries no assumed unit or frame — it's explicitly the "we don't know what this is" bucket, not a default path. `docs/episode.md` and `src/mekiki/episode.py` both updated together so they don't drift.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->

@@ -31,15 +31,32 @@ One timestep within an episode:
 | `success` | `bool \| None` | episode-level outcome label if the source dataset provides one; `None` if unlabeled, never coerced to `False` |
 | `language_instruction` | `str \| None` | task description in natural language, if present |
 
-`Proprioception` holds joint state (`positions`, and `velocities` when
-available — both `float64[n_joints]`, radians and rad/s for revolute joints)
-plus end-effector pose and gripper state. End-effector orientation is stored
-as a unit quaternion `(x, y, z, w)` — never Euler angles, which are
-ambiguous without a fixed axis convention and lossy at gauge-lock — and
-position in meters. Gripper state is a single `float64` in `[0.0, 1.0]`
-(0 = fully closed, 1 = fully open) even for datasets whose native gripper
-signal is binary; readers document the source encoding they normalized
-from.
+`Proprioception` does not assume a single-arm-with-gripper robot. Real
+datasets vary more than that: bimanual setups (e.g. ALOHA) have two
+end-effectors and two grippers, many datasets record only joint positions
+with no computed end-effector pose (that requires forward kinematics mekiki
+doesn't perform), and some tasks aren't arm-shaped at all (e.g. PushT's raw
+2D pusher position). So every field is optional except an escape hatch:
+
+- `joint_positions` / `joint_velocities`: `float64[n_joints]`, radians and
+  rad/s for revolute joints, or `None` if the dataset doesn't record them.
+- `ee_poses: dict[str, Pose]`, keyed by a short name the source dataset uses
+  to distinguish end-effectors (`"ee"` for a single arm, `"left"`/`"right"`
+  for bimanual) — empty if the dataset provides no end-effector pose. Pose
+  orientation is a unit quaternion `(x, y, z, w)` — never Euler angles,
+  which are ambiguous without a fixed axis convention and lossy at
+  gauge-lock — position in meters.
+- `grippers: dict[str, float]`, each value normalized to `[0.0, 1.0]`
+  (0 = fully closed, 1 = fully open) even when the source signal is binary,
+  keyed the same way as `ee_poses` when there's a correspondence. Empty if
+  there's no gripper.
+- `extra: dict[str, NDArray[float64]]` for anything else the dataset
+  records that doesn't fit the fields above, keyed by the source dataset's
+  own field name, values as-recorded with **no assumed unit or frame** — a
+  reader populating this must say so in its own docs, and mekiki does not
+  infer physical meaning for it. This is a deliberate escape hatch, not a
+  default: a reader should prefer the structured fields whenever a value
+  clearly is a joint position, an end-effector pose, or a gripper.
 
 ## Action space: delta vs. absolute
 

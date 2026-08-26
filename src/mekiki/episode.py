@@ -70,24 +70,42 @@ class Pose:
 class Proprioception:
     """Recorded robot state at one timestep.
 
+    Does not assume a single-arm-with-gripper robot: bimanual setups have
+    two end-effectors and two grippers, many datasets record only joint
+    positions with no computed end-effector pose, and some tasks aren't
+    arm-shaped at all. Every field is optional except ``extra``, an escape
+    hatch for state that doesn't fit the structured fields — see
+    docs/episode.md.
+
     Attributes:
-        joint_positions: ``(n_joints,)`` array, radians for revolute joints.
-        joint_velocities: ``(n_joints,)`` array, rad/s, or ``None`` if the
-            source dataset doesn't record velocities.
-        ee_pose: End-effector pose.
-        gripper: Normalized gripper state in ``[0.0, 1.0]`` — 0 fully
-            closed, 1 fully open — normalized even when the source signal is
-            binary.
+        joint_positions: ``(n_joints,)`` array, radians for revolute joints,
+            or ``None`` if the source dataset doesn't record joint state.
+        joint_velocities: ``(n_joints,)`` array, rad/s, or ``None``.
+        ee_poses: End-effector poses keyed by a short name the source
+            dataset uses to distinguish them (``"ee"`` for a single arm,
+            ``"left"``/``"right"`` for bimanual). Empty if the dataset
+            provides no end-effector pose.
+        grippers: Normalized gripper state in ``[0.0, 1.0]`` (0 fully
+            closed, 1 fully open) — normalized even when the source signal
+            is binary — keyed the same way as ``ee_poses`` when there's a
+            correspondence. Empty if there's no gripper.
+        extra: Anything else the dataset records that doesn't fit the
+            fields above (e.g. PushT's raw 2D pusher position), keyed by
+            the source dataset's own field name, values as-recorded with no
+            assumed unit or frame. A reader populating this must document
+            what it put here; mekiki does not infer physical meaning for it.
     """
 
-    joint_positions: NDArray[np.float64]
+    joint_positions: NDArray[np.float64] | None
     joint_velocities: NDArray[np.float64] | None
-    ee_pose: Pose
-    gripper: float
+    ee_poses: dict[str, Pose]
+    grippers: dict[str, float]
+    extra: dict[str, NDArray[np.float64]]
 
     def __post_init__(self) -> None:
-        if not 0.0 <= self.gripper <= 1.0:
-            raise ValueError(f"gripper must be in [0.0, 1.0], got {self.gripper}")
+        for name, value in self.grippers.items():
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"gripper {name!r} must be in [0.0, 1.0], got {value}")
 
 
 @dataclass(frozen=True, slots=True, eq=False)
