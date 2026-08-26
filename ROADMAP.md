@@ -6,7 +6,7 @@ reorder whenever, don't delete anything without a note in [DECISIONS.md](DECISIO
 - [ ] M1 — episode abstraction. one in-memory rep for timestamped observations, actions, proprio, camera streams, metadata. readers for LeRobotDataset and RLDS/Open X-Embodiment.
       write `docs/episode.md` first — action space conventions, delta vs absolute, frame handling all get decided here and everything downstream inherits it. pull one small public dataset and round-trip it before moving on.
       - [x] `docs/episode.md`
-      - [ ] `Episode` / `Frame` dataclasses, typed, streaming-friendly
+      - [x] `Episode` / `Frame` dataclasses, typed, streaming-friendly
       - [ ] LeRobotDataset reader, round-tripped against a small public dataset
       - [ ] RLDS / Open X-Embodiment reader
 - [ ] M2 — temporal integrity. dropped frames, non-monotonic timestamps, control freq jitter, camera/proprio desync.

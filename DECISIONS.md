@@ -9,4 +9,8 @@ log of calls that aren't obvious from the code, so future-me doesn't redo or re-
 - CLI entry point (`mekiki.cli:main`) stubbed now instead of waiting for M5. packaging/entry-point wiring is cheap to get right early and cheap to test; real subcommands still land in M5.
 - license: apache-2.0, matches the robotics ecosystem norm, pulled verbatim from apache.org.
 
+## 2026-08-25 — numpy pinned below 2.4
+
+`numpy>=2.4` ships stub files using PEP 695 `type` statements, which mypy 2.3.1 (latest available) can't parse when `python_version` is set below 3.12 — `mypy --strict` fails on `numpy/__init__.pyi` itself, not on our code. Pinned `numpy<2.4` in `pyproject.toml` until either mypy fixes this or we're ready to drop 3.10/3.11 support and bump the project's own `python_version` target. Revisit this pin periodically rather than forgetting it's there.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->
