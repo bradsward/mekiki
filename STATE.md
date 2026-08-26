@@ -12,11 +12,12 @@ repo lives at github.com/bradsward/mekiki, private. checked this session: ruff c
 
 ## next
 
-M1 — episode abstraction. write `docs/episode.md` before touching code: action space conventions (delta vs absolute), frame/coordinate handling, what a `Frame`/`Episode` actually holds. then the core dataclasses, then a LeRobotDataset reader round-tripped against one small public dataset (smallest LeRobot-hosted example with proprio + at least one camera stream). RLDS/Open X-Embodiment reader after that's solid.
+`docs/episode.md` is written — action space conventions (per-dimension delta vs absolute, explicit units/frames), frame handling (readers preserve source frame labels, no silent conversion), camera streams (lazy decode, timestamps independent of control timestamp), streaming rules. next: the `Episode`/`Frame` dataclasses themselves, typed against that doc, then a LeRobotDataset reader round-tripped against one small public dataset. RLDS/Open X-Embodiment reader after that's solid.
 
 ## open questions / risks
 
-- haven't pulled any dataset down in this environment yet — M1 needs network access + some disk space. check that's available before locking in a specific dataset in `docs/episode.md`.
+- haven't pulled any dataset down in this environment yet — the reader needs network access + some disk space. pick the smallest LeRobot-hosted example with proprio + at least one camera stream once that's confirmed.
+- `docs/episode.md` says a reader that can't determine the action space with confidence should fail loudly rather than guess — worth double-checking that's actually enforceable for LeRobotDataset, since I haven't looked at a real one's feature schema yet to see how explicit it actually is about delta vs absolute.
 
 ## recommendations
 
@@ -28,3 +29,4 @@ ideas noticed in passing, outside whatever the session's actual task was. need a
 
 2026-08-25 · M0 · repo skeleton, tooling, CI, license, readme · next: docs/episode.md then Episode dataclasses + LeRobot reader (M1)
 2026-08-25 · infra · pushed to github (private), nightly build session scheduled · next: M1
+2026-08-25 · M1 · docs/episode.md written (action space, frames, streaming rules) · next: Episode/Frame dataclasses
