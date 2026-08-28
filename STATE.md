@@ -26,6 +26,8 @@ The owner's call on the RLDS-priority recommendation: do v2.x first (done above)
 
 camera pixels are still the one thing not real across either layout: `Frame.images` correctly reports that a camera exists (name, resolution) but `.read()` raises `NotImplementedError` — real cameras are video-encoded (av1) and mekiki has no decoder yet. Still deliberately deferred; see recommendations.
 
+M2 (temporal integrity) started: split it into four sub-checks in `ROADMAP.md` (non-monotonic timestamps, control frequency jitter, dropped frames, camera/proprio desync) since it wasn't broken down before. First one done: `src/mekiki/checks/temporal.py`'s `check_timestamp_monotonicity` — streams an episode once (doesn't materialize all frames), reports `min_delta_seconds` against a `threshold_seconds` plus which frame indices violated it, never a bare pass/fail. Tested against both a clean control (`make_clean_episode`) and precisely-injected defects (duplicate timestamp → 0.0 delta, out-of-order → negative delta, sub-threshold gap only caught with a stricter threshold), plus checked against a real `lerobot/pusht` episode (161 frames, 0 violations, ~0.1s deltas matching its 10Hz rate).
+
 ## open questions / risks
 
 - numpy is pinned to `<2.4` (see DECISIONS.md) purely because of a mypy/stub incompatibility — not a real dependency conflict. Remember to reconsider that pin once mypy catches up, so it doesn't quietly linger for years.
@@ -48,3 +50,4 @@ ideas noticed in passing, outside whatever the session's actual task was. need a
 2026-08-26 · M1 · LeRobotDataset reader now builds real Frame/Proprioception objects, verified end-to-end against lerobot/pusht (206 episodes, 25650 frames) · next: RLDS/Open X-Embodiment reader, or camera decoding if that becomes urgent first
 2026-08-26 · M1 · researched real RLDS/OXE format (docs/rlds.md), added codebase_version guard after finding real data (bridge_orig_lerobot) is LeRobotDataset v2.x not v3.0 · next: your call on the RLDS-native/dependency recommendations, then LeRobotDataset v2.x support
 2026-08-26 · M1 · LeRobotDataset v2.0/v2.1 support added (owner picked this over native RLDS first), verified against real bridge_orig_lerobot (53192 episodes, 1893026 frames match) and berkeley_cable_routing_lerobot (v2.1) · next: RLDS-native reader (TF dependency sign-off still needed) or camera decoding, whichever becomes relevant first
+2026-08-27 · M2 · split M2 into 4 sub-checks, implemented the first (timestamp monotonicity), verified against real lerobot/pusht data · next: control frequency jitter or dropped frames
