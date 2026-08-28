@@ -10,6 +10,7 @@ checked.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pyarrow as pa
@@ -108,6 +109,8 @@ def test_read_info_parses_core_fields(dataset_dir: Path) -> None:
     assert info.total_episodes == 2
     assert info.total_frames == 5
     assert info.action_dims == 2
+    assert info.chunks_size == 1000
+    assert info.robot_type == "unknown"
 
 
 def test_read_info_missing_directory_raises() -> None:
@@ -116,14 +119,15 @@ def test_read_info_missing_directory_raises() -> None:
 
 
 def test_read_info_rejects_unsupported_codebase_version(tmp_path: Path) -> None:
-    # e.g. LeRobotDataset v2.x: a real, common case (see docs/rlds.md), not
-    # a hypothetical one -- must fail clearly, not silently misread.
+    # a hypothetical future version this reader hasn't been checked against
+    # -- must fail clearly, not silently misread. (v2.0/v2.1/v3.0 are all
+    # real and supported -- see test_lerobot_v2.py and the fixture above.)
     meta_dir = tmp_path / "meta"
     meta_dir.mkdir()
     (meta_dir / "info.json").write_text(
         json.dumps(
             {
-                "codebase_version": "v2.0",
+                "codebase_version": "v4.0",
                 "fps": 10,
                 "total_episodes": 1,
                 "total_frames": 1,
@@ -134,7 +138,7 @@ def test_read_info_rejects_unsupported_codebase_version(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match=r"v2\.0"):
+    with pytest.raises(ValueError, match=r"v4\.0"):
         read_info(tmp_path)
 
 
@@ -188,9 +192,13 @@ def test_read_episode_refs_returns_all_episodes_in_order(dataset_dir: Path) -> N
     assert refs[1].dataset_to_index == 5
 
 
-def test_read_episode_refs_missing_directory_raises(tmp_path: Path) -> None:
+def test_read_episode_refs_missing_directory_raises(dataset_dir: Path) -> None:
+    # dataset_dir has a valid meta/info.json (v3.0) but no meta/episodes/ --
+    # the failure should be about the missing episode index specifically,
+    # not a generic "no info.json" error from an earlier step.
+    shutil.rmtree(dataset_dir / "meta" / "episodes")
     with pytest.raises(FileNotFoundError, match="episode index"):
-        read_episode_refs(tmp_path)
+        read_episode_refs(dataset_dir)
 
 
 def test_read_episodes_yields_expected_episode_and_frame_counts(dataset_dir: Path) -> None:

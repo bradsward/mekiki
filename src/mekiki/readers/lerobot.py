@@ -1,12 +1,25 @@
 """Reader for the LeRobotDataset on-disk format.
 
-Targets the v3.0 layout used by current LeRobot Hub datasets: per-dataset
-``meta/info.json``, an episode index at ``meta/episodes/chunk-*/file-*.parquet``,
-and frame data at ``data/chunk-*/file-*.parquet`` — one data file commonly
-holds many episodes' rows concatenated, distinguished by a global ``index``
-column and an ``episode_index`` column. Schema confirmed against a real
-dataset (``lerobot/pusht``) rather than assumed from documentation, since
-LeRobotDataset has changed on-disk layout across versions before.
+Handles the two LeRobotDataset layouts actually seen in the wild, both
+checked against real datasets rather than assumed from documentation
+(LeRobotDataset has changed on-disk layout across versions before, and
+does not always agree with itself about it):
+
+- **v3.0** (checked against ``lerobot/pusht``): a shared episode index at
+  ``meta/episodes/chunk-*/file-*.parquet``, and frame data at
+  ``data/chunk-*/file-*.parquet`` where one data file commonly holds many
+  episodes' rows concatenated, distinguished by a global ``index`` column.
+- **v2.0/v2.1** (checked against ``IPEC-COMMUNITY/bridge_orig_lerobot`` and
+  ``IPEC-COMMUNITY/berkeley_cable_routing_lerobot``): a flat
+  ``meta/episodes.jsonl`` (one JSON object per line: episode_index, tasks,
+  length) and one parquet file *per episode* at
+  ``data/chunk-*/episode_{episode_index:06d}.parquet`` — no from/to index
+  slicing needed, the whole file is the episode. This is the layout most
+  community conversions of Open X-Embodiment datasets use on the Hugging
+  Face Hub, including this project's own README example (Bridge V2).
+
+Any other ``codebase_version`` is rejected loudly by `read_info` rather than
+read speculatively — see `SUPPORTED_CODEBASE_VERSIONS`.
 
 ``read_episodes`` builds real ``Frame``/``Proprioception`` objects from the
 frame-data parquet files. It deliberately does not guess which columns are
@@ -48,10 +61,10 @@ _KNOWN_COLUMNS = frozenset(
     {"action", "episode_index", "frame_index", "timestamp", "index", "task_index"}
 )
 
-#: LeRobotDataset format versions this reader has been checked against.
-#: A dataset reporting a different ``codebase_version`` may still work, but
-#: hasn't been verified — see `read_info`.
-SUPPORTED_CODEBASE_VERSIONS = ("v3.0",)
+#: LeRobotDataset format versions this reader has been checked against real
+#: data for. A dataset reporting a different ``codebase_version`` is
+#: rejected by `read_info` rather than read speculatively.
+SUPPORTED_CODEBASE_VERSIONS = ("v2.0", "v2.1", "v3.0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,9 +76,22 @@ class LeRobotInfo:
         fps: Nominal control frequency in Hz.
         total_episodes: Number of episodes in the dataset.
         total_frames: Number of frames across all episodes.
+        chunks_size: Episodes (v2.x) or files (v3.0) per chunk directory —
+            needed to resolve v2.x's ``data_path`` template, which encodes
+            a chunk number derived from ``episode_index // chunks_size``
+            rather than storing it explicitly anywhere.
         data_path: Template for locating frame-data parquet files, e.g.
-            ``"data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"``.
+            ``"data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"``
+            (v3.0) or ``"data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"``
+            (v2.x) — the placeholder names differ by version, which is why
+            path resolution is version-aware (see `read_episode_refs`)
+            rather than a single generic `.format()` call.
         video_path: Template for locating per-camera video files.
+        robot_type: Free-text robot/embodiment identifier from info.json
+            (e.g. ``"widowx"``), or ``"unknown"`` if absent. Unlike action
+            semantics this carries no correctness risk if wrong — it's a
+            label, not something a check computes against — so it's used
+            as-is rather than requiring a caller override.
         features: Raw ``"features"`` mapping from info.json, keyed by
             feature name (``"observation.state"``, ``"action"``, camera
             keys, ...). Kept as the source dict rather than re-typed, since
@@ -81,8 +107,10 @@ class LeRobotInfo:
     fps: float
     total_episodes: int
     total_frames: int
+    chunks_size: int
     data_path: str
     video_path: str
+    robot_type: str
     features: dict[str, dict[str, Any]]
     action_dims: int
 
@@ -104,14 +132,10 @@ def read_info(dataset_dir: Path) -> LeRobotInfo:
             feature, or that feature has no usable shape — this reader has
             nothing to validate an action space against in that case. Also
             raised if ``codebase_version`` isn't one this reader has been
-            checked against — see `SUPPORTED_CODEBASE_VERSIONS`. LeRobotDataset
-            v2.x uses a materially different on-disk layout (a flat
-            ``meta/episodes.jsonl`` instead of ``meta/episodes/**.parquet``);
-            reading it with this reader would fail confusingly downstream
-            rather than tell you why, so this checks and fails clearly
-            instead — a real, common case: e.g.
-            ``IPEC-COMMUNITY/bridge_orig_lerobot`` on the Hugging Face Hub
-            (this project's own README example dataset) is ``v2.0``.
+            checked against real data for — see
+            `SUPPORTED_CODEBASE_VERSIONS`. Reading an unrecognized version
+            further would risk silently misreading rather than failing
+            clearly, so this stops immediately instead.
 
     Example:
         >>> from pathlib import Path
@@ -129,11 +153,10 @@ def read_info(dataset_dir: Path) -> LeRobotInfo:
     if codebase_version not in SUPPORTED_CODEBASE_VERSIONS:
         raise ValueError(
             f"{info_path} reports codebase_version {codebase_version!r}, but this reader "
-            f"has only been checked against {SUPPORTED_CODEBASE_VERSIONS!r}. LeRobotDataset "
-            "v2.x uses a different on-disk layout (meta/episodes.jsonl, not "
-            "meta/episodes/**.parquet) that this reader doesn't understand yet — "
-            "see docs/rlds.md. Reading it further here would risk silently misreading "
-            "rather than failing clearly, so this stops now instead."
+            f"has only been checked against real data for {SUPPORTED_CODEBASE_VERSIONS!r} "
+            "— see docs/rlds.md for how those were verified. Reading an unrecognized "
+            "version further here would risk silently misreading rather than failing "
+            "clearly, so this stops now instead."
         )
     features: dict[str, dict[str, Any]] = raw["features"]
     action_feature = features.get("action")
@@ -145,12 +168,14 @@ def read_info(dataset_dir: Path) -> LeRobotInfo:
     action_shape = action_feature["shape"]
     action_dims = int(action_shape[0]) if action_shape else 0
     return LeRobotInfo(
-        codebase_version=raw["codebase_version"],
+        codebase_version=codebase_version,
         fps=float(raw["fps"]),
         total_episodes=int(raw["total_episodes"]),
         total_frames=int(raw["total_frames"]),
+        chunks_size=int(raw["chunks_size"]),
         data_path=raw["data_path"],
         video_path=raw["video_path"],
+        robot_type=str(raw.get("robot_type") or "unknown"),
         features=features,
         action_dims=action_dims,
     )
@@ -182,8 +207,8 @@ def validate_action_space(info: LeRobotInfo, action_space: ActionSpaceSpec | Non
         >>> from mekiki.episode import ActionDimSpec
         >>> info = LeRobotInfo(
         ...     codebase_version="v3.0", fps=10.0, total_episodes=1,
-        ...     total_frames=1, data_path="", video_path="", features={},
-        ...     action_dims=2,
+        ...     total_frames=1, chunks_size=1000, data_path="", video_path="",
+        ...     robot_type="unknown", features={}, action_dims=2,
         ... )
         >>> validate_action_space(info, None)
         Traceback (most recent call last):
@@ -206,46 +231,63 @@ def validate_action_space(info: LeRobotInfo, action_space: ActionSpaceSpec | Non
 
 @dataclass(frozen=True, slots=True)
 class LeRobotEpisodeRef:
-    """One row of ``meta/episodes/**.parquet``: where to find one episode.
+    """One entry from the episode index: where to find one episode's data.
+
+    Comes from ``meta/episodes/**.parquet`` (v3.0) or ``meta/episodes.jsonl``
+    (v2.x) — see `read_episode_refs`.
 
     Attributes:
         episode_index: Index of this episode within the dataset.
-        data_chunk_index: Chunk component of the parquet file holding this
-            episode's frame data (see `LeRobotInfo.data_path`).
-        data_file_index: File component of that same parquet file.
+        data_relative_path: Path, relative to the dataset root, to the
+            parquet file holding this episode's frame data — already
+            resolved from `LeRobotInfo.data_path`'s version-specific
+            template, so callers never need to know which placeholder
+            names that template uses.
         dataset_from_index: First row (inclusive) of this episode's frames
-            in that file's global ``index`` column.
-        dataset_to_index: Last row (exclusive) of this episode's frames.
-        length: Number of frames in this episode
-            (``dataset_to_index - dataset_from_index``).
+            in that file's global ``index`` column, when the file holds
+            more than one episode's rows (v3.0). ``None`` when each episode
+            has its own file (v2.x) — the whole file belongs to this
+            episode, no slicing needed.
+        dataset_to_index: Last row (exclusive), or ``None`` — see above.
+        length: Number of frames in this episode.
         tasks: Language instruction(s) recorded for this episode.
     """
 
     episode_index: int
-    data_chunk_index: int
-    data_file_index: int
-    dataset_from_index: int
-    dataset_to_index: int
+    data_relative_path: str
+    dataset_from_index: int | None
+    dataset_to_index: int | None
     length: int
     tasks: tuple[str, ...]
 
 
-def read_episode_refs(dataset_dir: Path) -> list[LeRobotEpisodeRef]:
-    """Read the episode index from every ``meta/episodes/**.parquet`` file.
+def read_episode_refs(
+    dataset_dir: Path, info: LeRobotInfo | None = None
+) -> list[LeRobotEpisodeRef]:
+    """Read the episode index, however this dataset's version stores it.
 
     Args:
         dataset_dir: Root of a local LeRobotDataset directory.
+        info: Already-parsed `LeRobotInfo`, to avoid re-reading
+            ``meta/info.json`` when the caller has it already (e.g.
+            `read_episodes`). Read fresh via `read_info` if omitted.
 
     Returns:
         One `LeRobotEpisodeRef` per episode, ordered by ``episode_index``.
-        A dataset's episode index can be split across several parquet
-        files (mirroring how ``meta/episodes/`` is itself chunked); all of
-        them are read and merged.
 
     Raises:
-        FileNotFoundError: no parquet files found under
-            ``<dataset_dir>/meta/episodes``.
+        FileNotFoundError: the episode index (``meta/episodes/**.parquet``
+            for v3.0, ``meta/episodes.jsonl`` for v2.x) doesn't exist under
+            ``dataset_dir``.
     """
+    if info is None:
+        info = read_info(dataset_dir)
+    if info.codebase_version == "v3.0":
+        return _read_episode_refs_v3(dataset_dir, info)
+    return _read_episode_refs_v2(dataset_dir, info)
+
+
+def _read_episode_refs_v3(dataset_dir: Path, info: LeRobotInfo) -> list[LeRobotEpisodeRef]:
     episodes_dir = dataset_dir / "meta" / "episodes"
     files = sorted(episodes_dir.glob("**/*.parquet"))
     if not files:
@@ -266,14 +308,49 @@ def read_episode_refs(dataset_dir: Path) -> list[LeRobotEpisodeRef]:
             ],
         )
         for row in table.to_pylist():
+            data_relative_path = info.data_path.format(
+                chunk_index=row["data/chunk_index"], file_index=row["data/file_index"]
+            )
             refs.append(
                 LeRobotEpisodeRef(
                     episode_index=row["episode_index"],
-                    data_chunk_index=row["data/chunk_index"],
-                    data_file_index=row["data/file_index"],
+                    data_relative_path=data_relative_path,
                     dataset_from_index=row["dataset_from_index"],
                     dataset_to_index=row["dataset_to_index"],
                     length=row["length"],
+                    tasks=tuple(row["tasks"]),
+                )
+            )
+    refs.sort(key=lambda ref: ref.episode_index)
+    return refs
+
+
+def _read_episode_refs_v2(dataset_dir: Path, info: LeRobotInfo) -> list[LeRobotEpisodeRef]:
+    episodes_path = dataset_dir / "meta" / "episodes.jsonl"
+    if not episodes_path.is_file():
+        raise FileNotFoundError(
+            f"no meta/episodes.jsonl under {dataset_dir} for a {info.codebase_version} "
+            "LeRobotDataset"
+        )
+    refs: list[LeRobotEpisodeRef] = []
+    with episodes_path.open(encoding="utf-8") as lines:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            episode_index = int(row["episode_index"])
+            episode_chunk = episode_index // info.chunks_size
+            data_relative_path = info.data_path.format(
+                episode_chunk=episode_chunk, episode_index=episode_index
+            )
+            refs.append(
+                LeRobotEpisodeRef(
+                    episode_index=episode_index,
+                    data_relative_path=data_relative_path,
+                    dataset_from_index=None,
+                    dataset_to_index=None,
+                    length=int(row["length"]),
                     tasks=tuple(row["tasks"]),
                 )
             )
@@ -314,13 +391,16 @@ def read_episodes(
     action_space: ActionSpaceSpec,
     *,
     dataset_name: str | None = None,
-    robot_embodiment: str = "unknown",
+    robot_embodiment: str | None = None,
 ) -> Iterator[Episode]:
     """Read every episode in a LeRobotDataset directory.
 
     Streams one episode at a time (per docs/episode.md); within an episode,
     proprioception/action/timestamp are read eagerly (cheap — a few floats
-    per frame) but camera pixels are never decoded here.
+    per frame) but camera pixels are never decoded here. Works against
+    either on-disk layout this reader supports (v3.0's shared multi-episode
+    data files, or v2.x's one-file-per-episode layout) transparently — see
+    the module docstring.
 
     State columns (e.g. ``observation.state``) are never assumed to be
     joint positions, an end-effector pose, or a gripper — LeRobotDataset
@@ -338,18 +418,17 @@ def read_episodes(
         dataset_name: Value for `EpisodeMetadata.dataset_name`. Defaults to
             ``dataset_dir.name``.
         robot_embodiment: Value for `EpisodeMetadata.robot_embodiment`.
-            LeRobotDataset's ``info.json`` carries a ``robot_type`` field in
-            practice but it isn't guaranteed present or meaningful (real
-            data has been seen with it set to ``"unknown"``), so it's a
-            caller-supplied override rather than something this reader
-            trusts blindly.
+            Defaults to ``info.robot_type`` (the dataset's own declared
+            value, or ``"unknown"`` if it doesn't have one) — pass this to
+            override.
 
     Yields:
         One `Episode` per episode in the dataset, in ``episode_index`` order.
 
     Raises:
-        ValueError: `action_space` doesn't match the dataset (see
-            `validate_action_space`).
+        ValueError: `action_space` doesn't match the dataset, or
+            ``codebase_version`` isn't supported (see `validate_action_space`,
+            `read_info`).
         FileNotFoundError: metadata or a referenced data file is missing.
 
     Example:
@@ -367,23 +446,28 @@ def read_episodes(
     info = read_info(dataset_dir)
     validate_action_space(info, action_space)
     resolved_dataset_name = dataset_name if dataset_name is not None else dataset_dir.name
+    resolved_robot_embodiment = (
+        robot_embodiment if robot_embodiment is not None else info.robot_type
+    )
     camera_features = _video_camera_features(info)
-    refs = read_episode_refs(dataset_dir)
+    refs = read_episode_refs(dataset_dir, info)
 
-    data_tables: dict[tuple[int, int], pa.Table] = {}
+    data_tables: dict[str, pa.Table] = {}
     for ref in refs:
-        key = (ref.data_chunk_index, ref.data_file_index)
-        if key not in data_tables:
-            rel_path = info.data_path.format(
-                chunk_index=ref.data_chunk_index, file_index=ref.data_file_index
+        if ref.data_relative_path not in data_tables:
+            data_tables[ref.data_relative_path] = pq.read_table(
+                dataset_dir / ref.data_relative_path
             )
-            data_tables[key] = pq.read_table(dataset_dir / rel_path)
-        table = data_tables[key]
-        mask = pc.and_(
-            pc.greater_equal(table["index"], ref.dataset_from_index),
-            pc.less(table["index"], ref.dataset_to_index),
-        )
-        rows = table.filter(mask).to_pylist()
+        table = data_tables[ref.data_relative_path]
+
+        if ref.dataset_from_index is not None and ref.dataset_to_index is not None:
+            mask = pc.and_(
+                pc.greater_equal(table["index"], ref.dataset_from_index),
+                pc.less(table["index"], ref.dataset_to_index),
+            )
+            rows = table.filter(mask).to_pylist()
+        else:
+            rows = table.to_pylist()
         rows.sort(key=lambda row: row["index"])
 
         extra_columns = [
@@ -405,7 +489,7 @@ def read_episodes(
         metadata = EpisodeMetadata(
             episode_id=str(ref.episode_index),
             dataset_name=resolved_dataset_name,
-            robot_embodiment=robot_embodiment,
+            robot_embodiment=resolved_robot_embodiment,
             action_space=action_space,
             source_format="lerobot",
         )

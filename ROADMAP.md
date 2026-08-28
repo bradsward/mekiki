@@ -7,13 +7,16 @@ reorder whenever, don't delete anything without a note in [DECISIONS.md](DECISIO
       write `docs/episode.md` first — action space conventions, delta vs absolute, frame handling all get decided here and everything downstream inherits it. pull one small public dataset and round-trip it before moving on.
       - [x] `docs/episode.md`
       - [x] `Episode` / `Frame` dataclasses, typed, streaming-friendly
-      - [x] LeRobotDataset reader, round-tripped against a small public dataset (`lerobot/pusht`, 206/206 episodes, 25650/25650 frames match)
-        - [x] `meta/info.json` parsing + episode index (`meta/episodes/**.parquet`)
+      - [x] LeRobotDataset reader — round-tripped against three real datasets across both on-disk layouts the format actually uses:
+        - [x] v3.0 (`lerobot/pusht`, 206/206 episodes, 25650/25650 frames match) — shared multi-episode data files, `meta/episodes/**.parquet` index
+        - [x] v2.0 (`IPEC-COMMUNITY/bridge_orig_lerobot`, 53192/53192 episodes, 1893026/1893026 frames match, incl. `bridge_v2` — this project's own README example) — one parquet file per episode, `meta/episodes.jsonl` index
+        - [x] v2.1 layout-compatibility spot-checked against `IPEC-COMMUNITY/berkeley_cable_routing_lerobot`
+        - [x] `meta/info.json` parsing + episode index, for both layouts
         - [x] action-space fail-loud gate: info.json never declares delta-vs-absolute/unit/frame, so a caller-supplied `ActionSpaceSpec` is required and validated against the actual action dimensionality
-        - [x] frame-data parquet reading (`data/**.parquet`) into `Frame`/`Proprioception` — unlabeled state columns go to `Proprioception.extra` rather than being guessed into joints/ee/gripper
+        - [x] frame-data parquet reading into `Frame`/`Proprioception` — unlabeled state columns go to `Proprioception.extra` rather than being guessed into joints/ee/gripper
+        - [x] reject unsupported `codebase_version` loudly instead of misreading
+        - [x] `robot_embodiment` defaults to the dataset's own declared `robot_type` (e.g. `"widowx"`) instead of always `"unknown"`, caller can still override
         - [ ] camera pixel decoding — real datasets use video-encoded cameras (e.g. av1); `CameraFrame` correctly represents that a camera exists (name, resolution) but `.read()` raises `NotImplementedError` until a decode dependency is added. deliberately deferred to whenever a check first needs actual pixels (M6 at the latest).
-        - [x] reject unsupported `codebase_version` loudly instead of misreading — real LeRobotDataset v2.x uses a different on-disk layout (`meta/episodes.jsonl`, not `meta/episodes/**.parquet`) than what's implemented (v3.0 only so far)
-      - [ ] LeRobotDataset v2.x layout support — a lot of real converted data (including `IPEC-COMMUNITY/bridge_orig_lerobot`, i.e. this project's own README's `bridge_v2` example) is v2.0/v2.1, not v3.0. needs its own real-schema check first (`meta/episodes.jsonl` line format, one-parquet-per-episode data layout), same way v3.0 did — see `docs/rlds.md`.
       - [ ] RLDS / Open X-Embodiment reader — real format is TFRecord-wrapped `tensorflow_datasets` serialization, not a simple flat format; genuinely needs `tensorflow`/`tensorflow_datasets` (or an unvalidatable hand-rolled decoder) to read correctly. see `docs/rlds.md` and the recommendation in `STATE.md` before starting this — it may be lower priority than it looks, since most OXE data is already reachable via LeRobotDataset mirrors on the Hub (which raises the v2.x item above in priority instead).
 - [ ] M2 — temporal integrity. dropped frames, non-monotonic timestamps, control freq jitter, camera/proprio desync.
 - [ ] M3 — action-state consistency (the flagship one). forward-integrate commanded actions, diff against recorded proprio, report residuals in real units. `docs/consistency.md` first — tolerance has to scale with control freq and robot type, don't rush it.

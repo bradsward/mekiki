@@ -6,6 +6,11 @@ see the recommendation in `STATE.md`. This is a reference doc, not a design
 doc like `docs/episode.md`: it records what's actually there, not a
 convention mekiki is choosing to enforce.
 
+**Update:** the "LeRobotDataset isn't one format" finding below is no
+longer just a finding — `src/mekiki/readers/lerobot.py` now handles both
+the v3.0 and v2.0/v2.1 layouts. The RLDS-native (TFRecord/TFDS) parts of
+this doc are still just notes; nothing's been built against them.
+
 ## What was checked
 
 Open X-Embodiment's native release lives on Google Cloud Storage
