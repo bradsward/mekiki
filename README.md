@@ -29,8 +29,7 @@ mekiki coverage ~/data/bridge_v2/
 ## Status
 
 Pre-alpha. Under active development — see [ROADMAP.md](ROADMAP.md) for
-what's built and what's next, and [STATE.md](STATE.md) for the current
-session log.
+what's built and what's next, and [STATE.md](STATE.md) for the running log.
 
 ## Scope
 

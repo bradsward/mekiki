@@ -36,7 +36,7 @@ dev = [
 mekiki = "mekiki.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/bradward/mekiki"
+Homepage = "https://github.com/bradsward/mekiki"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mekiki"]

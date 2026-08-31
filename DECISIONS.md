@@ -29,7 +29,7 @@ Checked real RLDS/OXE data before writing a reader for it (see `docs/rlds.md`) a
 
 ## 2026-08-26 — LeRobotDataset v2.0/v2.1 support added, not just detected
 
-Per the owner's call (prioritize this over the native RLDS/TFRecord reader, since it needs no heavy dependency and unblocks real data immediately): implemented the v2.x layout on top of the v2/v3 rejection guard from the previous entry, rather than just leaving it rejected.
+Decided to prioritize this over the native RLDS/TFRecord reader, since it needs no heavy dependency and unblocks real data immediately: implemented the v2.x layout on top of the v2/v3 rejection guard from the previous entry, rather than just leaving it rejected.
 
 Design: `LeRobotEpisodeRef` gained a resolved `data_relative_path` (computed once from `LeRobotInfo.data_path`'s version-specific template — v3.0 and v2.x use different placeholder names, `chunk_index`/`file_index` vs. `episode_chunk`/`episode_index`) and made `dataset_from_index`/`dataset_to_index` optional — `None` for v2.x, where each episode owns its whole file and no row-range slicing is needed. `read_episode_refs` dispatches on `codebase_version` to a v2 (`meta/episodes.jsonl`, line-delimited JSON) or v3 (`meta/episodes/**.parquet`) implementation; `read_episodes` itself needed no branching once refs carry a resolved path and an optional row range.
 
