@@ -104,3 +104,117 @@ def check_timestamp_monotonicity(
         min_delta_seconds=min_delta if math.isfinite(min_delta) else 0.0,
         threshold_seconds=threshold_seconds,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ControlFrequencyJitterResult:
+    """Result of checking how far consecutive-frame deltas stray from a
+    declared nominal control rate.
+
+    Attributes:
+        n_frames: Total frames checked.
+        nominal_dt_seconds: Expected interval between consecutive frames
+            (``1 / nominal_hz``), in seconds.
+        max_abs_jitter_seconds: Largest ``|actual_delta - nominal_dt_seconds|``
+            observed across all consecutive deltas.
+        violation_indices: Frame indices whose delta from the previous
+            frame deviated from ``nominal_dt_seconds`` by more than
+            ``threshold_seconds``.
+        threshold_seconds: Maximum allowed absolute deviation from the
+            nominal interval, in seconds, before a delta counts as jitter.
+    """
+
+    n_frames: int
+    nominal_dt_seconds: float
+    max_abs_jitter_seconds: float
+    violation_indices: tuple[int, ...]
+    threshold_seconds: float
+
+    @property
+    def violation_fraction(self) -> float:
+        """Violations as a fraction of consecutive-frame pairs checked."""
+        pairs = self.n_frames - 1
+        return len(self.violation_indices) / pairs if pairs > 0 else 0.0
+
+
+def check_control_frequency_jitter(
+    episode: Episode,
+    *,
+    nominal_hz: float,
+    threshold_fraction: float = 0.2,
+) -> ControlFrequencyJitterResult:
+    """Check how far consecutive-frame deltas stray from a declared rate.
+
+    Assumes timestamps are already known monotonic — run
+    `check_timestamp_monotonicity` first. A non-monotonic delta here would
+    just produce a confusing jitter magnitude rather than a meaningful one.
+
+    Args:
+        episode: Episode to check.
+        nominal_hz: The dataset's own *declared* control frequency (e.g. a
+            LeRobotDataset's ``info.json`` ``fps``) — never inferred from
+            the data itself. Inferring it (say, from the median delta)
+            could never catch a systematic rate error where every frame
+            was recorded at the wrong pace: the episode would just look
+            self-consistent against its own median. This must come from
+            the dataset's own declared metadata, the same way
+            `mekiki.readers.lerobot.validate_action_space` requires a
+            caller-supplied action space rather than guessing one.
+        threshold_fraction: Maximum allowed deviation from the nominal
+            interval, as a fraction of it (e.g. ``0.2`` = 20%). A fraction
+            rather than a fixed number of seconds because the same
+            absolute jitter means very different things at 5 Hz vs. 100 Hz.
+
+    Returns:
+        The check result, with the actual magnitude
+        (`ControlFrequencyJitterResult.max_abs_jitter_seconds`) against the
+        resolved threshold in seconds — never a bare pass/fail.
+
+    Raises:
+        ValueError: ``nominal_hz`` is not positive.
+
+    Example:
+        >>> from pathlib import Path
+        >>> from mekiki.episode import ActionDimSpec
+        >>> from mekiki.readers.lerobot import read_episodes, read_info
+        >>> action_space = (
+        ...     ActionDimSpec("x", "absolute", "normalized", "unknown"),
+        ...     ActionDimSpec("y", "absolute", "normalized", "unknown"),
+        ... )
+        >>> dataset_dir = Path("~/data/pusht").expanduser()
+        >>> info = read_info(dataset_dir)  # doctest: +SKIP
+        >>> episode = next(read_episodes(dataset_dir, action_space))  # doctest: +SKIP
+        >>> result = check_control_frequency_jitter(
+        ...     episode, nominal_hz=info.fps
+        ... )  # doctest: +SKIP
+        >>> result.violation_indices  # doctest: +SKIP
+        ()
+    """
+    if nominal_hz <= 0:
+        raise ValueError(f"nominal_hz must be positive, got {nominal_hz}")
+
+    nominal_dt = 1.0 / nominal_hz
+    threshold_seconds = threshold_fraction * nominal_dt
+
+    n_frames = 0
+    violation_indices: list[int] = []
+    max_abs_jitter = 0.0
+    previous_timestamp: float | None = None
+
+    for i, frame in enumerate(episode):
+        n_frames += 1
+        if previous_timestamp is not None:
+            delta = frame.timestamp - previous_timestamp
+            jitter = abs(delta - nominal_dt)
+            max_abs_jitter = max(max_abs_jitter, jitter)
+            if jitter > threshold_seconds:
+                violation_indices.append(i)
+        previous_timestamp = frame.timestamp
+
+    return ControlFrequencyJitterResult(
+        n_frames=n_frames,
+        nominal_dt_seconds=nominal_dt,
+        max_abs_jitter_seconds=max_abs_jitter,
+        violation_indices=tuple(violation_indices),
+        threshold_seconds=threshold_seconds,
+    )

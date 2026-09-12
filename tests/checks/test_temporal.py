@@ -1,10 +1,13 @@
-"""Tests for `mekiki.checks.temporal.check_timestamp_monotonicity`."""
+"""Tests for `mekiki.checks.temporal`."""
 
 from __future__ import annotations
 
 import pytest
 
-from mekiki.checks.temporal import check_timestamp_monotonicity
+from mekiki.checks.temporal import (
+    check_control_frequency_jitter,
+    check_timestamp_monotonicity,
+)
 from mekiki.episode import Episode, EpisodeMetadata
 from tests.conftest import CLEAN_ACTION_SPACE, make_clean_episode, make_clean_frame
 
@@ -97,4 +100,77 @@ def test_empty_episode_reports_zero_frames() -> None:
     result = check_timestamp_monotonicity(Episode(metadata=metadata, frames=[]))
     assert result.n_frames == 0
     assert result.violation_indices == ()
+    assert result.violation_fraction == 0.0
+
+
+# --- check_control_frequency_jitter ------------------------------------
+
+
+def test_clean_episode_at_nominal_rate_has_no_jitter_violations() -> None:
+    episode = make_clean_episode(n_frames=6, control_hz=10.0)
+    result = check_control_frequency_jitter(episode, nominal_hz=10.0)
+    assert result.n_frames == 6
+    assert result.nominal_dt_seconds == pytest.approx(0.1)
+    assert result.violation_indices == ()
+    assert result.max_abs_jitter_seconds == pytest.approx(0.0, abs=1e-9)
+
+
+def test_large_single_frame_delay_is_flagged_at_known_magnitude() -> None:
+    # nominal 0.1s dt; frame 2 arrives 0.05s late -- well past the default
+    # 20% threshold (0.02s)
+    episode = _episode_from_timestamps([0.0, 0.1, 0.25, 0.35])
+    result = check_control_frequency_jitter(episode, nominal_hz=10.0)
+    assert result.violation_indices == (2,)
+    assert result.max_abs_jitter_seconds == pytest.approx(0.05)
+    assert result.threshold_seconds == pytest.approx(0.02)
+
+
+def test_small_jitter_within_threshold_fraction_is_not_flagged() -> None:
+    # a 0.01s wobble on a 0.1s nominal dt is 10% -- under the default 20%
+    episode = _episode_from_timestamps([0.0, 0.1, 0.19, 0.29])
+    result = check_control_frequency_jitter(episode, nominal_hz=10.0)
+    assert result.violation_indices == ()
+    assert result.max_abs_jitter_seconds == pytest.approx(0.01)
+
+
+def test_custom_threshold_fraction_catches_smaller_jitter() -> None:
+    episode = _episode_from_timestamps([0.0, 0.1, 0.19, 0.29])
+    strict = check_control_frequency_jitter(episode, nominal_hz=10.0, threshold_fraction=0.05)
+    assert strict.violation_indices == (2,)
+    assert strict.threshold_seconds == pytest.approx(0.005)
+
+
+def test_systematic_wrong_nominal_rate_flags_every_frame() -> None:
+    # the data was actually recorded at 10Hz (0.1s dt) throughout, but the
+    # caller declares 5Hz (0.2s dt) -- a self-referential median-delta
+    # estimate would never catch this, since the episode is perfectly
+    # consistent with itself. every consecutive pair should be flagged.
+    episode = make_clean_episode(n_frames=5, control_hz=10.0)
+    result = check_control_frequency_jitter(episode, nominal_hz=5.0)
+    assert result.violation_indices == (1, 2, 3, 4)
+    assert result.max_abs_jitter_seconds == pytest.approx(0.1)
+
+
+def test_rejects_non_positive_nominal_hz() -> None:
+    episode = make_clean_episode(n_frames=2)
+    with pytest.raises(ValueError, match="nominal_hz"):
+        check_control_frequency_jitter(episode, nominal_hz=0.0)
+    with pytest.raises(ValueError, match="nominal_hz"):
+        check_control_frequency_jitter(episode, nominal_hz=-5.0)
+
+
+def test_jitter_violation_fraction_matches_hand_count() -> None:
+    episode = _episode_from_timestamps([0.0, 0.1, 0.25, 0.35, 0.45])
+    result = check_control_frequency_jitter(episode, nominal_hz=10.0)
+    assert result.n_frames == 5
+    assert result.violation_indices == (2,)
+    assert result.violation_fraction == pytest.approx(1 / 4)
+
+
+def test_jitter_single_frame_episode_reports_no_deltas() -> None:
+    episode = _episode_from_timestamps([0.0])
+    result = check_control_frequency_jitter(episode, nominal_hz=10.0)
+    assert result.n_frames == 1
+    assert result.violation_indices == ()
+    assert result.max_abs_jitter_seconds == 0.0
     assert result.violation_fraction == 0.0

@@ -8,7 +8,7 @@ M0's done. skeleton's in: pyproject (hatchling, ruff, mypy strict, pytest config
 
 local venv at `.venv/` (gitignored) — ruff, mypy, pytest, pytest-cov, numpy, pyarrow, installed via `pip install -e ".[dev]"`. no uv on this machine, just venv + pip. reuse `.venv/Scripts/python.exe -m <tool>` rather than recreating it unless it's actually missing.
 
-repo lives at github.com/bradsward/mekiki, private. ruff check, ruff format --check, mypy --strict, pytest -q all pass, coverage 99% (bar's 90%).
+repo lives at github.com/bradsward/mekiki, public since 2026-08-31. ruff check, ruff format --check, mypy --strict, pytest -q all pass, coverage 99% (bar's 90%).
 
 ## next
 
@@ -27,6 +27,8 @@ decided to do v2.x first (done above), keep native RLDS on the roadmap but after
 camera pixels are still the one thing not real across either layout: `Frame.images` correctly reports that a camera exists (name, resolution) but `.read()` raises `NotImplementedError` — real cameras are video-encoded (av1) and mekiki has no decoder yet. Still deliberately deferred; see parked.
 
 M2 (temporal integrity) started: split it into four sub-checks in `ROADMAP.md` (non-monotonic timestamps, control frequency jitter, dropped frames, camera/proprio desync) since it wasn't broken down before. First one done: `src/mekiki/checks/temporal.py`'s `check_timestamp_monotonicity` — streams an episode once (doesn't materialize all frames), reports `min_delta_seconds` against a `threshold_seconds` plus which frame indices violated it, never a bare pass/fail. Tested against both a clean control (`make_clean_episode`) and precisely-injected defects (duplicate timestamp → 0.0 delta, out-of-order → negative delta, sub-threshold gap only caught with a stricter threshold), plus checked against a real `lerobot/pusht` episode (161 frames, 0 violations, ~0.1s deltas matching its 10Hz rate).
+
+Second one done: `check_control_frequency_jitter`. Takes `nominal_hz` as a required, caller-supplied value (the dataset's own declared fps, e.g. `LeRobotInfo.fps`) rather than inferring a nominal rate from the data itself — inferring it (median delta or similar) can never catch a systematic wrong-rate error, since the episode would just look self-consistent against its own median. Threshold is a fraction of the nominal interval (default 20%), not a fixed number of seconds, since the same absolute jitter means very different things at 5Hz vs 100Hz. Tested against a clean control, a single large delay at a known magnitude, a small in-threshold wobble, a tightened threshold catching that same wobble, and — the one that actually matters — a deliberately wrong declared rate (supplying 2x the dataset's real fps) flagging every single frame, proving the "declared, not inferred" design choice actually does what it's for. Verified against the real `lerobot/pusht` episode too: correct fps (10.0) gives ~0 jitter (floating-point noise only), doubled fps flags all 160 pairs.
 
 ## open questions / risks
 
@@ -52,3 +54,5 @@ ideas noticed in passing, outside whatever the session's actual task was. not de
 2026-08-26 · M1 · LeRobotDataset v2.0/v2.1 support added (decided this goes before native RLDS), verified against real bridge_orig_lerobot (53192 episodes, 1893026 frames match) and berkeley_cable_routing_lerobot (v2.1) · next: RLDS-native reader (still haven't committed to the TF dependency) or camera decoding, whichever becomes relevant first
 2026-08-27 · M2 · split M2 into 4 sub-checks, implemented the first (timestamp monotonicity), verified against real lerobot/pusht data · next: control frequency jitter or dropped frames
 2026-08-27 · infra · pulled the nightly scheduled task — every run since it was set up died silently at a broken sleep step and never actually did anything, so it wasn't earning its keep. everything in this repo so far is from working sessions directly, not unattended runs. revisit with a simpler design later.
+2026-08-31 · docs · fixed a wrong Homepage URL, gitignored .claude/, made the CLI README examples clearly aspirational and added a real working code sample, went public on GitHub · next: control frequency jitter or dropped frames
+2026-09-12 · M2 · control frequency jitter check, verified against real lerobot/pusht data (correct fps clean, doubled fps flags every frame) · next: dropped frames, then camera/proprio desync
