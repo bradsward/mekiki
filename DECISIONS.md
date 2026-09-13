@@ -41,4 +41,12 @@ Small side improvement while in there: `read_episodes`'s `robot_embodiment` now 
 
 Found while adding `check_dropped_frames`: two test functions in `tests/checks/test_temporal.py` ended up both named `test_rejects_non_positive_nominal_hz` (one for the jitter check's guard, one for the dropped-frames check's). pytest doesn't error or warn on this — Python's module namespace just keeps the second definition, so the first one never gets collected and its assertions never run. Coverage caught it (one line in the jitter check stayed unexpectedly uncovered); nothing else would have. Renamed both to unique, check-prefixed names (`test_jitter_rejects_...`, `test_dropped_frames_rejects_...`). Worth remembering as a class of bug: a 100%-passing test suite can still be silently missing tests, and coverage percentage is the only signal that catches it — a good reason to actually look at *what's* uncovered, not just the percentage.
 
+## 2026-09-12 — M3's action-target correspondence is a new type, not an ActionDimSpec extension
+
+Forward integration needs to know what physical quantity each action dimension predicts (a position axis, an orientation axis, a gripper, a joint) — `ActionDimSpec` (mode/unit/frame) deliberately never said this, since `docs/episode.md` scoped M3's frame-conversion and correspondence concerns out on purpose.
+
+Considered extending `ActionDimSpec` itself with a `target` field. Decided against it: that type is already shipped, tested, and consumed by two reader layouts (v2.x and v3.0) — bolting M3-only complexity onto a stable M1 abstraction for a problem M3 can solve entirely on its own is a worse trade than adding one new type (`ActionTarget`/`ActionTargetSpec`, caller-supplied the same way `ActionSpaceSpec` is) that only M3's own code needs to know about. `docs/consistency.md` has the full design.
+
+Also decided, in the same doc: frame handling for integration is deliberately narrow — only "same frame" and "delta expressed in the end-effector frame, rotated by the current orientation" are supported, since both are computable from data mekiki already has (no URDF/external kinematics needed). Anything else fails loudly per dimension rather than attempting an unsound transform. And multi-step rollout comparison is explicitly out of scope for v1 — a different, harder, differently-scoped problem than single-step "does this one action explain this one transition."
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->
