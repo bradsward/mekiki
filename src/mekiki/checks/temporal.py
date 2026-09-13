@@ -344,3 +344,127 @@ def check_dropped_frames(
         estimated_dropped_per_gap=tuple(estimated_dropped),
         threshold_multiple=threshold_multiple,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class CameraDesyncResult:
+    """Result of checking one camera's timestamp gap from its owning
+    frame's control timestamp, across an episode.
+
+    Attributes:
+        camera_name: Which camera (``Frame.images`` key) this is for.
+        n_total_frames: Number of frames in the episode where this camera
+            was present at all. A frame missing this camera entirely (a
+            dropped stream) is a different failure mode, not reported here.
+        n_measured_frames: Of those, how many had
+            ``CameraFrame.timestamp_is_measured`` set — i.e. the source
+            dataset actually recorded this camera's timestamp separately
+            from the control timestamp, rather than the reader assuming
+            them equal. Desync can only be assessed for these frames.
+        max_abs_gap_seconds: Largest ``|camera_timestamp - frame_timestamp|``
+            observed across measured frames.
+        violation_indices: Frame indices, among measured frames, where the
+            gap exceeded ``threshold_seconds``.
+        threshold_seconds: Maximum allowed absolute gap before it counts
+            as desync.
+
+    Warning:
+        If `is_measured` is ``False``, every other numeric field here is
+        meaningless — ``n_measured_frames == 0`` means desync was never
+        checked for this camera, not that it's confirmed at zero.
+        docs/episode.md is explicit that an absence of measured desync
+        must never be read as "verified in sync." Always check
+        `is_measured` before trusting `max_abs_gap_seconds` or
+        `violation_indices`.
+    """
+
+    camera_name: str
+    n_total_frames: int
+    n_measured_frames: int
+    max_abs_gap_seconds: float
+    violation_indices: tuple[int, ...]
+    threshold_seconds: float
+
+    @property
+    def is_measured(self) -> bool:
+        """Whether this camera had any frames with a real measured
+        timestamp to check desync against at all."""
+        return self.n_measured_frames > 0
+
+    @property
+    def violation_fraction(self) -> float:
+        """Violations as a fraction of *measured* frames — never divides
+        by `n_total_frames`, since unmeasured frames can't violate
+        anything by construction."""
+        return len(self.violation_indices) / self.n_measured_frames if self.is_measured else 0.0
+
+
+def check_camera_proprio_desync(
+    episode: Episode, *, threshold_seconds: float = 0.05
+) -> dict[str, CameraDesyncResult]:
+    """Check each camera's timestamp gap from its frame's control timestamp.
+
+    Streams the episode once, accumulating running per-camera state
+    (frames aren't materialized). Returns one result per camera name that
+    appears anywhere in the episode — a multi-camera episode (e.g. a wrist
+    camera plus an exterior one) can have very different desync behavior
+    per camera, so they're never averaged together.
+
+    Args:
+        episode: Episode to check.
+        threshold_seconds: Maximum allowed absolute gap, in seconds,
+            before a measured frame counts as desynced.
+
+    Returns:
+        A dict keyed by camera name. Check `CameraDesyncResult.is_measured`
+        on each result before trusting its magnitude — a camera whose
+        timestamps were never actually measured (only assumed synced by
+        the reader) reports ``is_measured=False``, which is a different
+        thing from "confirmed in sync."
+
+    Raises:
+        ValueError: ``threshold_seconds`` is negative.
+
+    Example:
+        >>> from pathlib import Path
+        >>> from mekiki.episode import ActionDimSpec
+        >>> from mekiki.readers.lerobot import read_episodes
+        >>> action_space = (
+        ...     ActionDimSpec("x", "absolute", "normalized", "unknown"),
+        ...     ActionDimSpec("y", "absolute", "normalized", "unknown"),
+        ... )
+        >>> dataset_dir = Path("~/data/pusht").expanduser()
+        >>> episode = next(read_episodes(dataset_dir, action_space))  # doctest: +SKIP
+        >>> results = check_camera_proprio_desync(episode)  # doctest: +SKIP
+        >>> results["observation.image"].is_measured  # doctest: +SKIP
+        False
+    """
+    if threshold_seconds < 0:
+        raise ValueError(f"threshold_seconds must not be negative, got {threshold_seconds}")
+
+    n_total: dict[str, int] = {}
+    n_measured: dict[str, int] = {}
+    max_gap: dict[str, float] = {}
+    violations: dict[str, list[int]] = {}
+
+    for i, frame in enumerate(episode):
+        for camera_name, camera_frame in frame.images.items():
+            n_total[camera_name] = n_total.get(camera_name, 0) + 1
+            if camera_frame.timestamp_is_measured:
+                n_measured[camera_name] = n_measured.get(camera_name, 0) + 1
+                gap = abs(camera_frame.timestamp - frame.timestamp)
+                max_gap[camera_name] = max(max_gap.get(camera_name, 0.0), gap)
+                if gap > threshold_seconds:
+                    violations.setdefault(camera_name, []).append(i)
+
+    return {
+        camera_name: CameraDesyncResult(
+            camera_name=camera_name,
+            n_total_frames=total,
+            n_measured_frames=n_measured.get(camera_name, 0),
+            max_abs_gap_seconds=max_gap.get(camera_name, 0.0),
+            violation_indices=tuple(violations.get(camera_name, [])),
+            threshold_seconds=threshold_seconds,
+        )
+        for camera_name, total in n_total.items()
+    }
