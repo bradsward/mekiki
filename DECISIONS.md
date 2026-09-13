@@ -37,4 +37,8 @@ Verified against real data, not just the synthetic fixture: `IPEC-COMMUNITY/brid
 
 Small side improvement while in there: `read_episodes`'s `robot_embodiment` now defaults to the dataset's own declared `info.robot_type` (e.g. `bridge_orig`'s real value, `"widowx"`) instead of always `"unknown"` regardless of what the file actually says — a caller can still override it. Low-risk since, unlike action-space semantics, a wrong robot label doesn't corrupt any computed check, it's just a name.
 
+## 2026-09-12 — pytest silently drops duplicate test function names within a file
+
+Found while adding `check_dropped_frames`: two test functions in `tests/checks/test_temporal.py` ended up both named `test_rejects_non_positive_nominal_hz` (one for the jitter check's guard, one for the dropped-frames check's). pytest doesn't error or warn on this — Python's module namespace just keeps the second definition, so the first one never gets collected and its assertions never run. Coverage caught it (one line in the jitter check stayed unexpectedly uncovered); nothing else would have. Renamed both to unique, check-prefixed names (`test_jitter_rejects_...`, `test_dropped_frames_rejects_...`). Worth remembering as a class of bug: a 100%-passing test suite can still be silently missing tests, and coverage percentage is the only signal that catches it — a good reason to actually look at *what's* uncovered, not just the percentage.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->

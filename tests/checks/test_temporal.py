@@ -6,6 +6,7 @@ import pytest
 
 from mekiki.checks.temporal import (
     check_control_frequency_jitter,
+    check_dropped_frames,
     check_timestamp_monotonicity,
 )
 from mekiki.episode import Episode, EpisodeMetadata
@@ -151,7 +152,7 @@ def test_systematic_wrong_nominal_rate_flags_every_frame() -> None:
     assert result.max_abs_jitter_seconds == pytest.approx(0.1)
 
 
-def test_rejects_non_positive_nominal_hz() -> None:
+def test_jitter_rejects_non_positive_nominal_hz() -> None:
     episode = make_clean_episode(n_frames=2)
     with pytest.raises(ValueError, match="nominal_hz"):
         check_control_frequency_jitter(episode, nominal_hz=0.0)
@@ -174,3 +175,90 @@ def test_jitter_single_frame_episode_reports_no_deltas() -> None:
     assert result.violation_indices == ()
     assert result.max_abs_jitter_seconds == 0.0
     assert result.violation_fraction == 0.0
+
+
+# --- check_dropped_frames ------------------------------------------------
+
+
+def test_clean_episode_has_no_gaps() -> None:
+    episode = make_clean_episode(n_frames=6, control_hz=10.0)
+    result = check_dropped_frames(episode, nominal_hz=10.0)
+    assert result.n_frames == 6
+    assert result.gap_indices == ()
+    assert result.total_estimated_dropped == 0
+    assert result.gap_fraction == 0.0
+
+
+def test_one_dropped_frame_estimated_at_known_magnitude() -> None:
+    # nominal 0.1s dt; frame 2 arrives at 2x the interval -- exactly one
+    # frame's worth missing
+    gapped = _episode_from_timestamps([0.0, 0.1, 0.3, 0.4])
+    result = check_dropped_frames(gapped, nominal_hz=10.0)
+    assert result.gap_indices == (2,)
+    assert result.estimated_dropped_per_gap == (1,)
+    assert result.total_estimated_dropped == 1
+
+
+def test_two_dropped_frames_estimated_at_known_magnitude() -> None:
+    # delta is 3x the nominal interval -- two frames' worth missing
+    episode = _episode_from_timestamps([0.0, 0.1, 0.4, 0.5])
+    result = check_dropped_frames(episode, nominal_hz=10.0)
+    assert result.gap_indices == (2,)
+    assert result.estimated_dropped_per_gap == (2,)
+    assert result.total_estimated_dropped == 2
+
+
+def test_delta_below_threshold_multiple_is_not_a_gap() -> None:
+    # 1.2x nominal dt is plausible ordinary jitter, well under the
+    # default 1.5x threshold for "a frame is missing"
+    episode = _episode_from_timestamps([0.0, 0.1, 0.22, 0.32])
+    result = check_dropped_frames(episode, nominal_hz=10.0)
+    assert result.gap_indices == ()
+    assert result.total_estimated_dropped == 0
+
+
+def test_custom_threshold_multiple_catches_smaller_gaps() -> None:
+    episode = _episode_from_timestamps([0.0, 0.1, 0.22, 0.32])
+    strict = check_dropped_frames(episode, nominal_hz=10.0, threshold_multiple=1.1)
+    assert strict.gap_indices == (2,)
+
+
+def test_multiple_gaps_sum_correctly() -> None:
+    # two separate gaps: 2x at index 2, 3x at index 4
+    episode = _episode_from_timestamps([0.0, 0.1, 0.3, 0.4, 0.7, 0.8])
+    result = check_dropped_frames(episode, nominal_hz=10.0)
+    assert result.gap_indices == (2, 4)
+    assert result.estimated_dropped_per_gap == (1, 2)
+    assert result.total_estimated_dropped == 3
+    assert result.gap_fraction == pytest.approx(2 / 5)
+
+
+def test_negative_delta_is_never_counted_as_a_gap() -> None:
+    # an out-of-order timestamp is check_timestamp_monotonicity's job, not
+    # this check's -- it must not also get flagged as a "dropped frame"
+    episode = _episode_from_timestamps([0.0, 0.1, 0.05, 0.15])
+    result = check_dropped_frames(episode, nominal_hz=10.0)
+    assert result.gap_indices == ()
+
+
+def test_dropped_frames_rejects_non_positive_nominal_hz() -> None:
+    episode = make_clean_episode(n_frames=2)
+    with pytest.raises(ValueError, match="nominal_hz"):
+        check_dropped_frames(episode, nominal_hz=0.0)
+
+
+def test_rejects_threshold_multiple_not_greater_than_one() -> None:
+    episode = make_clean_episode(n_frames=2)
+    with pytest.raises(ValueError, match="threshold_multiple"):
+        check_dropped_frames(episode, nominal_hz=10.0, threshold_multiple=1.0)
+    with pytest.raises(ValueError, match="threshold_multiple"):
+        check_dropped_frames(episode, nominal_hz=10.0, threshold_multiple=0.5)
+
+
+def test_dropped_frames_single_frame_episode_reports_no_gaps() -> None:
+    episode = _episode_from_timestamps([0.0])
+    result = check_dropped_frames(episode, nominal_hz=10.0)
+    assert result.n_frames == 1
+    assert result.gap_indices == ()
+    assert result.total_estimated_dropped == 0
+    assert result.gap_fraction == 0.0
