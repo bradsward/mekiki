@@ -49,4 +49,14 @@ Considered extending `ActionDimSpec` itself with a `target` field. Decided again
 
 Also decided, in the same doc: frame handling for integration is deliberately narrow — only "same frame" and "delta expressed in the end-effector frame, rotated by the current orientation" are supported, since both are computable from data mekiki already has (no URDF/external kinematics needed). Anything else fails loudly per dimension rather than attempting an unsound transform. And multi-step rollout comparison is explicitly out of scope for v1 — a different, harder, differently-scoped problem than single-step "does this one action explain this one transition."
 
+## 2026-09-13 — two real gaps found implementing the integration math, both scoped narrower rather than guessed past
+
+Implementing `predict_next_proprioception` against `docs/consistency.md` surfaced two things the doc hadn't fully pinned down:
+
+1. **`validate_action_target_spec` didn't check that a position/orientation group's three axes share the same mode/frame/unit.** Nothing stopped a caller from declaring x as `delta` and y as `absolute` for the same end-effector — meaningless once you try to integrate a 3-vector. Extended the validation function (same one from the previous session) to require mode, frame, and unit to match across all three axes in a group, in addition to the existing completeness check. This is squarely inside `validate_action_target_spec`'s own job, not scope creep.
+
+2. **Orientation-delta composition order depends on which frame the delta is expressed in, and the doc only gave the formula for one case.** `q_current ⊗ q_delta` (post-multiply) is the body/end-effector-frame convention; a delta expressed in the state's own frame (e.g. `base_link`) needs the *opposite* order (`q_delta ⊗ q_current`, pre-multiply) — real, standard kinematics, but the doc's Integration Rules section only wrote down the `ee`-frame formula. Rather than derive and ship the other composition order mid-implementation without it having gone through the same design-doc scrutiny as everything else here, `predict_next_proprioception` explicitly rejects same-frame (non-`ee`) orientation deltas for now, with an error message that says why and points here instead of failing silently or guessing. Tracked as a parked item in `STATE.md` — a real dataset that needs it is the right trigger to actually design and add it, not doing it speculatively now.
+
+Both directions (tighter validation, narrower supported scope) were chosen over the alternative of silently accepting something under-specified — consistent with the project's fail-loud-over-guess default everywhere else.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->
