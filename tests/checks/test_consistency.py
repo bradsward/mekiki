@@ -7,13 +7,16 @@ import pytest
 
 from mekiki.checks.consistency import (
     ActionTarget,
+    ToleranceModel,
     _quaternion_from_rotation_vector,
     _quaternion_multiply,
     _quaternion_to_rotation_matrix,
+    check_action_state_consistency,
     predict_next_proprioception,
     validate_action_target_spec,
 )
-from mekiki.episode import ActionDimSpec, Pose, Proprioception
+from mekiki.episode import ActionDimSpec, Episode, EpisodeMetadata, Frame, Pose, Proprioception
+from tests.conftest import CLEAN_ACTION_SPACE
 
 _POSITION_ACTION_SPACE = (
     ActionDimSpec("x", "delta", "m", "ee"),
@@ -621,3 +624,384 @@ def test_everything_together_produces_one_consistent_prediction() -> None:
     assert result.ee_positions["ee"] == pytest.approx([1.1, 1.1, 1.1])
     assert result.grippers["ee"] == pytest.approx(0.9)
     assert result.joint_positions[0] == pytest.approx(0.05)
+
+
+# --- ToleranceModel --------------------------------------------------------
+
+_ZERO_TOLERANCE = ToleranceModel(
+    position_base_m=0.0,
+    position_rate_per_second_m=0.0,
+    orientation_base_rad=0.0,
+    orientation_rate_per_second_rad=0.0,
+    gripper_base=0.0,
+    gripper_rate_per_second=0.0,
+    joint_base_rad=0.0,
+    joint_rate_per_second_rad=0.0,
+)
+
+
+def test_tolerance_model_rejects_negative_field() -> None:
+    with pytest.raises(ValueError, match="position_base_m"):
+        ToleranceModel(
+            position_base_m=-0.01,
+            position_rate_per_second_m=0.0,
+            orientation_base_rad=0.0,
+            orientation_rate_per_second_rad=0.0,
+            gripper_base=0.0,
+            gripper_rate_per_second=0.0,
+            joint_base_rad=0.0,
+            joint_rate_per_second_rad=0.0,
+        )
+
+
+def test_tolerance_model_scales_with_dt() -> None:
+    model = ToleranceModel(
+        position_base_m=0.01,
+        position_rate_per_second_m=0.1,
+        orientation_base_rad=0.02,
+        orientation_rate_per_second_rad=0.2,
+        gripper_base=0.03,
+        gripper_rate_per_second=0.3,
+        joint_base_rad=0.04,
+        joint_rate_per_second_rad=0.4,
+    )
+    assert model.position(dt=0.5) == pytest.approx(0.01 + 0.1 * 0.5)
+    assert model.orientation(dt=0.5) == pytest.approx(0.02 + 0.2 * 0.5)
+    assert model.gripper(dt=0.5) == pytest.approx(0.03 + 0.3 * 0.5)
+    assert model.joint(dt=0.5) == pytest.approx(0.04 + 0.4 * 0.5)
+
+
+# --- check_action_state_consistency ---------------------------------------
+
+
+def _frame(
+    timestamp: float,
+    proprioception: Proprioception,
+    action: np.ndarray,
+    *,
+    is_first: bool = False,
+    is_last: bool = False,
+) -> Frame:
+    return Frame(
+        timestamp=timestamp,
+        proprioception=proprioception,
+        action=action,
+        images={},
+        is_first=is_first,
+        is_last=is_last,
+    )
+
+
+def _episode_from_frames(frames: list[Frame]) -> Episode:
+    metadata = EpisodeMetadata(
+        episode_id="consistency-0",
+        dataset_name="synthetic",
+        robot_embodiment="franka_panda",
+        action_space=CLEAN_ACTION_SPACE,
+        source_format="synthetic",
+    )
+    return Episode(metadata=metadata, frames=frames)
+
+
+_POSITION_DELTA_ACTION_SPACE = (
+    ActionDimSpec("x", "delta", "m", "base_link"),
+    ActionDimSpec("y", "delta", "m", "base_link"),
+    ActionDimSpec("z", "delta", "m", "base_link"),
+)
+_POSITION_TARGET_SPEC = (
+    ActionTarget(kind="position_axis", end_effector="ee", axis="x"),
+    ActionTarget(kind="position_axis", end_effector="ee", axis="y"),
+    ActionTarget(kind="position_axis", end_effector="ee", axis="z"),
+)
+
+
+def test_perfectly_consistent_episode_has_no_violations() -> None:
+    # action exactly explains the next frame's position at every step
+    frames = [
+        _frame(
+            0.0,
+            _proprio_with_ee(position=(0.0, 0.0, 0.0)),
+            np.array([0.1, 0.0, 0.0]),
+            is_first=True,
+        ),
+        _frame(0.1, _proprio_with_ee(position=(0.1, 0.0, 0.0)), np.array([0.1, 0.0, 0.0])),
+        _frame(
+            0.2, _proprio_with_ee(position=(0.2, 0.0, 0.0)), np.array([0.0, 0.0, 0.0]), is_last=True
+        ),
+    ]
+    results = check_action_state_consistency(
+        _episode_from_frames(frames),
+        _POSITION_DELTA_ACTION_SPACE,
+        _POSITION_TARGET_SPEC,
+        _ZERO_TOLERANCE,
+    )
+    result = results["position:ee"]
+    assert result.n_steps == 2
+    assert result.violation_indices == ()
+    assert result.max_residual == pytest.approx(0.0, abs=1e-9)
+
+
+def test_position_mismatch_flagged_at_known_residual_and_threshold() -> None:
+    # action predicts (0.1, 0, 0) but the next frame actually recorded
+    # (0.15, 0, 0) -- a known 0.05m residual
+    frames = [
+        _frame(
+            0.0,
+            _proprio_with_ee(position=(0.0, 0.0, 0.0)),
+            np.array([0.1, 0.0, 0.0]),
+            is_first=True,
+        ),
+        _frame(
+            0.1,
+            _proprio_with_ee(position=(0.15, 0.0, 0.0)),
+            np.array([0.0, 0.0, 0.0]),
+            is_last=True,
+        ),
+    ]
+    tolerance = ToleranceModel(
+        position_base_m=0.01,
+        position_rate_per_second_m=0.0,
+        orientation_base_rad=0.0,
+        orientation_rate_per_second_rad=0.0,
+        gripper_base=0.0,
+        gripper_rate_per_second=0.0,
+        joint_base_rad=0.0,
+        joint_rate_per_second_rad=0.0,
+    )
+    results = check_action_state_consistency(
+        _episode_from_frames(frames), _POSITION_DELTA_ACTION_SPACE, _POSITION_TARGET_SPEC, tolerance
+    )
+    result = results["position:ee"]
+    assert result.violation_indices == (0,)  # the frame carrying the bad action
+    assert result.violation_residuals[0] == pytest.approx(0.05)
+    assert result.violation_thresholds[0] == pytest.approx(0.01)
+    assert result.max_residual == pytest.approx(0.05)
+
+
+def test_tolerance_growing_with_dt_can_absorb_the_same_residual() -> None:
+    # identical 0.05m residual as above, but a much larger dt this time --
+    # the rate term should loosen the threshold enough to not flag it
+    frames = [
+        _frame(
+            0.0,
+            _proprio_with_ee(position=(0.0, 0.0, 0.0)),
+            np.array([0.1, 0.0, 0.0]),
+            is_first=True,
+        ),
+        _frame(
+            1.0,
+            _proprio_with_ee(position=(0.15, 0.0, 0.0)),
+            np.array([0.0, 0.0, 0.0]),
+            is_last=True,
+        ),
+    ]
+    tolerance = ToleranceModel(
+        position_base_m=0.01,
+        position_rate_per_second_m=0.1,  # at dt=1.0s, tolerance = 0.01 + 0.1 = 0.11
+        orientation_base_rad=0.0,
+        orientation_rate_per_second_rad=0.0,
+        gripper_base=0.0,
+        gripper_rate_per_second=0.0,
+        joint_base_rad=0.0,
+        joint_rate_per_second_rad=0.0,
+    )
+    results = check_action_state_consistency(
+        _episode_from_frames(frames), _POSITION_DELTA_ACTION_SPACE, _POSITION_TARGET_SPEC, tolerance
+    )
+    result = results["position:ee"]
+    assert result.violation_indices == ()
+    assert result.max_residual == pytest.approx(0.05)
+
+
+def test_orientation_mismatch_flagged_with_angular_residual() -> None:
+    action_space = (
+        ActionDimSpec("rx", "delta", "rad", "ee"),
+        ActionDimSpec("ry", "delta", "rad", "ee"),
+        ActionDimSpec("rz", "delta", "rad", "ee"),
+    )
+    target_spec = (
+        ActionTarget(kind="orientation_axis", end_effector="ee", axis="x"),
+        ActionTarget(kind="orientation_axis", end_effector="ee", axis="y"),
+        ActionTarget(kind="orientation_axis", end_effector="ee", axis="z"),
+    )
+    q180 = np.array([0.0, 0.0, 1.0, 0.0])  # actual recorded: 180deg about z
+    frames = [
+        _frame(
+            0.0,
+            _proprio_with_ee(orientation=_IDENTITY_Q),
+            np.array([0.0, 0.0, np.pi / 2]),
+            is_first=True,
+        ),
+        _frame(0.1, _proprio_with_ee(orientation=q180), np.array([0.0, 0.0, 0.0]), is_last=True),
+    ]
+    # predicted = identity composed with a 90deg-z delta = a 90deg rotation
+    # (matches the quaternion-math tests above); actual is q180 -- residual
+    # should be the angular distance between a 90deg and a 180deg rotation
+    # about the same axis, i.e. exactly 90 degrees = pi/2 radians
+    results = check_action_state_consistency(
+        _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+    )
+    result = results["orientation:ee"]
+    assert result.max_residual == pytest.approx(np.pi / 2, abs=1e-9)
+
+
+def test_gripper_mismatch_flagged_at_known_residual() -> None:
+    action_space = (ActionDimSpec("gripper", "absolute", "normalized", "ee"),)
+    target_spec = (ActionTarget(kind="gripper", end_effector="ee"),)
+    frames = [
+        _frame(0.0, _proprio_with_ee(gripper=1.0), np.array([0.8]), is_first=True),
+        _frame(0.1, _proprio_with_ee(gripper=0.7), np.array([0.0]), is_last=True),
+    ]
+    results = check_action_state_consistency(
+        _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+    )
+    result = results["gripper:ee"]
+    assert result.max_residual == pytest.approx(0.1)  # |0.8 - 0.7|
+
+
+def test_joint_mismatch_flagged_at_known_residual() -> None:
+    action_space = (ActionDimSpec("j0", "delta", "rad", "joint"),)
+    target_spec = (ActionTarget(kind="joint", joint_index=0),)
+    frames = [
+        _frame(
+            0.0, _proprio_with_ee(joint_positions=np.array([0.0])), np.array([0.2]), is_first=True
+        ),
+        _frame(
+            0.1, _proprio_with_ee(joint_positions=np.array([0.25])), np.array([0.0]), is_last=True
+        ),
+    ]
+    results = check_action_state_consistency(
+        _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+    )
+    result = results["joint:0"]
+    assert result.max_residual == pytest.approx(0.05)  # |0.2 - 0.25|
+
+
+def test_missing_position_at_next_frame_raises() -> None:
+    frames = [
+        _frame(0.0, _proprio_with_ee(end_effector="ee"), np.array([0.1, 0.0, 0.0]), is_first=True),
+        _frame(
+            0.1, _proprio_with_ee(end_effector="other"), np.array([0.0, 0.0, 0.0]), is_last=True
+        ),
+    ]
+    with pytest.raises(ValueError, match="no ee_poses"):
+        check_action_state_consistency(
+            _episode_from_frames(frames),
+            _POSITION_DELTA_ACTION_SPACE,
+            _POSITION_TARGET_SPEC,
+            _ZERO_TOLERANCE,
+        )
+
+
+def test_all_none_target_spec_returns_empty_dict() -> None:
+    action_space = (ActionDimSpec("unlabeled", "delta", "normalized", "unknown"),)
+    target_spec = (None,)
+    frames = [
+        _frame(0.0, _proprio_with_ee(), np.array([0.0]), is_first=True),
+        _frame(0.1, _proprio_with_ee(), np.array([0.0]), is_last=True),
+    ]
+    results = check_action_state_consistency(
+        _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+    )
+    assert results == {}
+
+
+def test_single_frame_episode_returns_empty_dict() -> None:
+    frames = [
+        _frame(
+            0.0,
+            _proprio_with_ee(position=(0.0, 0.0, 0.0)),
+            np.array([0.1, 0.0, 0.0]),
+            is_first=True,
+            is_last=True,
+        )
+    ]
+    results = check_action_state_consistency(
+        _episode_from_frames(frames),
+        _POSITION_DELTA_ACTION_SPACE,
+        _POSITION_TARGET_SPEC,
+        _ZERO_TOLERANCE,
+    )
+    assert results == {}
+
+
+def test_multi_step_episode_reports_correct_step_count_and_indices() -> None:
+    # 4 frames -> 3 steps; inject one bad action at step index 1 (the
+    # second frame carries it)
+    frames = [
+        _frame(
+            0.0,
+            _proprio_with_ee(position=(0.0, 0.0, 0.0)),
+            np.array([0.1, 0.0, 0.0]),
+            is_first=True,
+        ),
+        _frame(0.1, _proprio_with_ee(position=(0.1, 0.0, 0.0)), np.array([0.1, 0.0, 0.0])),
+        _frame(
+            0.2, _proprio_with_ee(position=(0.5, 0.0, 0.0)), np.array([0.1, 0.0, 0.0])
+        ),  # bad jump
+        _frame(
+            0.3, _proprio_with_ee(position=(0.6, 0.0, 0.0)), np.array([0.0, 0.0, 0.0]), is_last=True
+        ),
+    ]
+    results = check_action_state_consistency(
+        _episode_from_frames(frames),
+        _POSITION_DELTA_ACTION_SPACE,
+        _POSITION_TARGET_SPEC,
+        _ZERO_TOLERANCE,
+    )
+    result = results["position:ee"]
+    assert result.n_steps == 3
+    assert result.violation_indices == (1,)
+    assert result.violation_residuals[0] == pytest.approx(0.3)  # |0.2 - 0.5|
+    assert result.violation_fraction == pytest.approx(1 / 3)
+
+
+def test_missing_orientation_at_next_frame_raises() -> None:
+    action_space = (
+        ActionDimSpec("rx", "delta", "rad", "ee"),
+        ActionDimSpec("ry", "delta", "rad", "ee"),
+        ActionDimSpec("rz", "delta", "rad", "ee"),
+    )
+    target_spec = (
+        ActionTarget(kind="orientation_axis", end_effector="ee", axis="x"),
+        ActionTarget(kind="orientation_axis", end_effector="ee", axis="y"),
+        ActionTarget(kind="orientation_axis", end_effector="ee", axis="z"),
+    )
+    frames = [
+        _frame(0.0, _proprio_with_ee(end_effector="ee"), np.array([0.0, 0.0, 0.0]), is_first=True),
+        _frame(
+            0.1, _proprio_with_ee(end_effector="other"), np.array([0.0, 0.0, 0.0]), is_last=True
+        ),
+    ]
+    with pytest.raises(ValueError, match="no ee_poses"):
+        check_action_state_consistency(
+            _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+        )
+
+
+def test_missing_gripper_at_next_frame_raises() -> None:
+    action_space = (ActionDimSpec("gripper", "absolute", "normalized", "ee"),)
+    target_spec = (ActionTarget(kind="gripper", end_effector="ee"),)
+    frames = [
+        _frame(0.0, _proprio_with_ee(gripper=1.0), np.array([0.5]), is_first=True),
+        _frame(0.1, _proprio_with_ee(gripper=None), np.array([0.0]), is_last=True),
+    ]
+    with pytest.raises(ValueError, match="no grippers"):
+        check_action_state_consistency(
+            _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+        )
+
+
+def test_missing_joint_at_next_frame_raises() -> None:
+    action_space = (ActionDimSpec("j0", "delta", "rad", "joint"),)
+    target_spec = (ActionTarget(kind="joint", joint_index=0),)
+    frames = [
+        _frame(
+            0.0, _proprio_with_ee(joint_positions=np.array([0.0])), np.array([0.1]), is_first=True
+        ),
+        _frame(0.1, _proprio_with_ee(joint_positions=None), np.array([0.0]), is_last=True),
+    ]
+    with pytest.raises(ValueError, match="no matching"):
+        check_action_state_consistency(
+            _episode_from_frames(frames), action_space, target_spec, _ZERO_TOLERANCE
+        )

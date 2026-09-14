@@ -4,11 +4,11 @@ module implements it, doesn't re-decide it.
 
 Covers the correspondence problem (`ActionTarget`/`ActionTargetSpec`,
 `validate_action_target_spec` — deliberately kept separate from
-`ActionDimSpec`/`Episode`, see ``docs/consistency.md``) and single-step
-forward integration (`predict_next_proprioception`), turning a validated
-spec plus one recorded action into a predicted next-step proprioception.
-The residual/tolerance check that compares a prediction against what was
-actually recorded isn't implemented yet.
+`ActionDimSpec`/`Episode`, see ``docs/consistency.md``), single-step
+forward integration (`predict_next_proprioception`), and the residual +
+tolerance check itself (`check_action_state_consistency`, `ToleranceModel`)
+that compares a prediction against what was actually recorded, in physical
+units, against a caller-supplied — never invented — tolerance.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from mekiki.episode import ActionDimSpec, ActionSpaceSpec, Proprioception
+from mekiki.episode import ActionDimSpec, ActionSpaceSpec, Episode, Proprioception
 
 ActionTargetKind = Literal["position_axis", "orientation_axis", "gripper", "joint"]
 
@@ -485,3 +485,292 @@ def predict_next_proprioception(
         grippers=grippers,
         joint_positions=joint_positions,
     )
+
+
+def _quaternion_angular_distance(q1: NDArray[np.float64], q2: NDArray[np.float64]) -> float:
+    """Angular distance in radians between two unit quaternions.
+
+    ``θ = 2 · arccos(|dot(q1, q2)|)``. The absolute value is not optional —
+    ``q`` and ``-q`` represent the same rotation, and skipping it turns
+    every correct prediction into a reported ~180° error (docs/consistency.md).
+    ``dot`` is clipped to ``[0, 1]`` before ``arccos`` purely to absorb
+    floating-point overshoot past 1.0 for two very-nearly-equal quaternions.
+    """
+    dot = float(np.clip(abs(float(np.dot(q1, q2))), 0.0, 1.0))
+    return 2.0 * float(np.arccos(dot))
+
+
+# --- tolerance ---------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ToleranceModel:
+    """Caller-supplied tolerance for action-state consistency residuals.
+
+    Per docs/consistency.md, tolerance is never invented by mekiki — every
+    field here comes from the caller (derived from the dataset's own robot
+    type and control loop), the same way `nominal_hz` does in
+    `mekiki.checks.temporal`. Each quantity's tolerance at a given ``dt``
+    (seconds between the two frames being compared) is
+    ``base + rate_per_second * dt``: a floor independent of timestep
+    (sensor/quantization noise) plus a term that grows with how long the
+    integration window is (how much a real, non-guessed controller can
+    plausibly drift from a naive open-loop prediction over that time).
+
+    Attributes:
+        position_base_m: Position residual floor, meters.
+        position_rate_per_second_m: Additional position tolerance per
+            second of ``dt``, meters/second.
+        orientation_base_rad: Orientation residual floor, radians.
+        orientation_rate_per_second_rad: Additional orientation tolerance
+            per second of ``dt``, radians/second.
+        gripper_base: Gripper residual floor, normalized ``[0, 1]`` fraction.
+        gripper_rate_per_second: Additional gripper tolerance per second,
+            normalized fraction/second.
+        joint_base_rad: Per-joint residual floor, radians.
+        joint_rate_per_second_rad: Additional per-joint tolerance per
+            second, radians/second.
+    """
+
+    position_base_m: float
+    position_rate_per_second_m: float
+    orientation_base_rad: float
+    orientation_rate_per_second_rad: float
+    gripper_base: float
+    gripper_rate_per_second: float
+    joint_base_rad: float
+    joint_rate_per_second_rad: float
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "position_base_m",
+            "position_rate_per_second_m",
+            "orientation_base_rad",
+            "orientation_rate_per_second_rad",
+            "gripper_base",
+            "gripper_rate_per_second",
+            "joint_base_rad",
+            "joint_rate_per_second_rad",
+        ):
+            value = getattr(self, field_name)
+            if value < 0:
+                raise ValueError(f"{field_name} must not be negative, got {value}")
+
+    def position(self, dt: float) -> float:
+        """Position tolerance at this ``dt`` (seconds), in meters."""
+        return self.position_base_m + self.position_rate_per_second_m * dt
+
+    def orientation(self, dt: float) -> float:
+        """Orientation tolerance at this ``dt`` (seconds), in radians."""
+        return self.orientation_base_rad + self.orientation_rate_per_second_rad * dt
+
+    def gripper(self, dt: float) -> float:
+        """Gripper tolerance at this ``dt`` (seconds), normalized fraction."""
+        return self.gripper_base + self.gripper_rate_per_second * dt
+
+    def joint(self, dt: float) -> float:
+        """Per-joint tolerance at this ``dt`` (seconds), in radians."""
+        return self.joint_base_rad + self.joint_rate_per_second_rad * dt
+
+
+# --- residual / consistency check ---------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ConsistencyResult:
+    """Result of checking one quantity's action-state consistency across
+    an episode.
+
+    One `ConsistencyResult` covers a single quantity — one end-effector's
+    position, one end-effector's orientation, one end-effector's gripper,
+    or one joint — never several combined, so a caller can see exactly
+    which quantity misbehaved.
+
+    Attributes:
+        n_steps: Number of ``(t, t+1)`` step-pairs checked for this quantity.
+        max_residual: Largest residual observed across the whole episode,
+            in this quantity's own physical unit (meters for position,
+            radians for orientation/joint, normalized fraction for gripper).
+        violation_indices: Indices of the frame that *carried the action*
+            found inconsistent (i.e. ``t``, not ``t+1``) — this is the
+            frame an auditor would look at to see what was commanded.
+        violation_residuals: The residual at each of ``violation_indices``,
+            same order, same unit as ``max_residual``.
+        violation_thresholds: The tolerance actually in force at each
+            violation (``ToleranceModel`` evaluated at that step's ``dt``),
+            same order — since tolerance varies with ``dt``, a bare
+            residual number alone wouldn't say how far over the line it was.
+    """
+
+    n_steps: int
+    max_residual: float
+    violation_indices: tuple[int, ...]
+    violation_residuals: tuple[float, ...]
+    violation_thresholds: tuple[float, ...]
+
+    @property
+    def violation_fraction(self) -> float:
+        """Violations as a fraction of steps checked for this quantity."""
+        return len(self.violation_indices) / self.n_steps if self.n_steps > 0 else 0.0
+
+
+class _RunningConsistency:
+    """Mutable accumulator for one quantity while streaming an episode.
+
+    Not part of the public API — `check_action_state_consistency` builds
+    one of these per quantity key and calls `.finish()` once at the end to
+    produce the frozen `ConsistencyResult` callers actually see.
+    """
+
+    def __init__(self) -> None:
+        self.n_steps = 0
+        self.max_residual = 0.0
+        self.violation_indices: list[int] = []
+        self.violation_residuals: list[float] = []
+        self.violation_thresholds: list[float] = []
+
+    def update(self, residual: float, threshold: float, frame_index: int) -> None:
+        self.n_steps += 1
+        self.max_residual = max(self.max_residual, residual)
+        if residual > threshold:
+            self.violation_indices.append(frame_index)
+            self.violation_residuals.append(residual)
+            self.violation_thresholds.append(threshold)
+
+    def finish(self) -> ConsistencyResult:
+        return ConsistencyResult(
+            n_steps=self.n_steps,
+            max_residual=self.max_residual,
+            violation_indices=tuple(self.violation_indices),
+            violation_residuals=tuple(self.violation_residuals),
+            violation_thresholds=tuple(self.violation_thresholds),
+        )
+
+
+def check_action_state_consistency(
+    episode: Episode,
+    action_space: ActionSpaceSpec,
+    target_spec: ActionTargetSpec,
+    tolerance: ToleranceModel,
+) -> dict[str, ConsistencyResult]:
+    """Check whether recorded actions explain the observed state transitions.
+
+    Streams the episode once (per docs/episode.md), forward-integrating
+    each frame's action via `predict_next_proprioception` and comparing the
+    prediction against what the *next* frame actually recorded, in the
+    physical units docs/consistency.md specifies. Single-step only — see
+    that doc for why multi-step rollout comparison is a different problem.
+
+    Args:
+        episode: Episode to check. Its frame timestamps are assumed
+            already known monotonic (`mekiki.checks.temporal.check_timestamp_monotonicity`
+            is a precondition here, the same way it's a precondition for
+            the M2 rate checks) — this function does not re-check that.
+        action_space: The episode's action space.
+        target_spec: What each action dimension predicts. Validated once,
+            up front — not re-validated per frame.
+        tolerance: Caller-supplied tolerance model (never invented by
+            mekiki) — see `ToleranceModel`.
+
+    Returns:
+        A dict keyed by ``"position:<end_effector>"``,
+        ``"orientation:<end_effector>"``, ``"gripper:<end_effector>"``, or
+        ``"joint:<joint_index>"`` — one `ConsistencyResult` per quantity
+        ``target_spec`` actually modeled. Empty if every dimension mapped
+        to `None` (nothing to check — not an error).
+
+    Raises:
+        ValueError: ``target_spec`` fails `validate_action_target_spec`;
+            `predict_next_proprioception` raises for any frame (unsupported
+            frame/mode, missing end-effector or joint in a frame's
+            proprioception, wrong unit); or a modeled quantity's actual
+            value is missing from the *next* frame's proprioception.
+
+    Example:
+        >>> from pathlib import Path
+        >>> from mekiki.readers.lerobot import read_episodes
+        >>> action_space = (ActionDimSpec("gripper", "absolute", "normalized", "ee"),)
+        >>> target_spec = (ActionTarget(kind="gripper", end_effector="ee"),)
+        >>> tolerance = ToleranceModel(
+        ...     position_base_m=0.01, position_rate_per_second_m=0.05,
+        ...     orientation_base_rad=0.05, orientation_rate_per_second_rad=0.2,
+        ...     gripper_base=0.05, gripper_rate_per_second=0.0,
+        ...     joint_base_rad=0.05, joint_rate_per_second_rad=0.2,
+        ... )
+        >>> dataset_dir = Path("~/data/pusht").expanduser()
+        >>> episode = next(read_episodes(dataset_dir, action_space))  # doctest: +SKIP
+        >>> results = check_action_state_consistency(
+        ...     episode, action_space, target_spec, tolerance
+        ... )  # doctest: +SKIP
+    """
+    validate_action_target_spec(action_space, target_spec)
+
+    running: dict[str, _RunningConsistency] = {}
+
+    def _get(key: str) -> _RunningConsistency:
+        if key not in running:
+            running[key] = _RunningConsistency()
+        return running[key]
+
+    previous_frame = None
+    previous_index = -1
+
+    for i, frame in enumerate(episode):
+        if previous_frame is not None:
+            dt = frame.timestamp - previous_frame.timestamp
+            predicted = predict_next_proprioception(
+                previous_frame.proprioception, previous_frame.action, action_space, target_spec
+            )
+
+            for end_effector, predicted_position in predicted.ee_positions.items():
+                actual_pose = frame.proprioception.ee_poses.get(end_effector)
+                if actual_pose is None:
+                    raise ValueError(
+                        f"predicted a position for end_effector {end_effector!r} but "
+                        f"frame {i} has no ee_poses[{end_effector!r}] to compare against"
+                    )
+                residual = float(np.linalg.norm(predicted_position - actual_pose.position))
+                _get(f"position:{end_effector}").update(
+                    residual, tolerance.position(dt), previous_index
+                )
+
+            for end_effector, predicted_orientation in predicted.ee_orientations.items():
+                actual_pose = frame.proprioception.ee_poses.get(end_effector)
+                if actual_pose is None:
+                    raise ValueError(
+                        f"predicted an orientation for end_effector {end_effector!r} but "
+                        f"frame {i} has no ee_poses[{end_effector!r}] to compare against"
+                    )
+                residual = _quaternion_angular_distance(
+                    predicted_orientation, actual_pose.orientation
+                )
+                _get(f"orientation:{end_effector}").update(
+                    residual, tolerance.orientation(dt), previous_index
+                )
+
+            for end_effector, predicted_gripper in predicted.grippers.items():
+                actual_gripper = frame.proprioception.grippers.get(end_effector)
+                if actual_gripper is None:
+                    raise ValueError(
+                        f"predicted a gripper value for end_effector {end_effector!r} but "
+                        f"frame {i} has no grippers[{end_effector!r}] to compare against"
+                    )
+                residual = abs(predicted_gripper - actual_gripper)
+                _get(f"gripper:{end_effector}").update(
+                    residual, tolerance.gripper(dt), previous_index
+                )
+
+            for joint_index, predicted_joint in predicted.joint_positions.items():
+                actual_joints = frame.proprioception.joint_positions
+                if actual_joints is None or joint_index >= len(actual_joints):
+                    raise ValueError(
+                        f"predicted joint {joint_index} but frame {i} has no matching "
+                        "joint_positions to compare against"
+                    )
+                residual = abs(predicted_joint - float(actual_joints[joint_index]))
+                _get(f"joint:{joint_index}").update(residual, tolerance.joint(dt), previous_index)
+
+        previous_frame = frame
+        previous_index = i
+
+    return {key: acc.finish() for key, acc in running.items()}
