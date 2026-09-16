@@ -230,3 +230,43 @@ already established as reliable by the M2 checks this one depends on.
   (nothing modeled, nothing to report — not an error).
 - Torque/force/wrench-based consistency (a genuinely different physical
   quantity from position/orientation kinematics; not attempted here).
+
+## Getting real proprioception in: `StateFieldSpec`
+
+Everything above assumes `Proprioception.ee_poses`/`joint_positions`/
+`grippers` are already populated. In practice they aren't:
+`mekiki.readers.lerobot` puts every non-standard column into
+`Proprioception.extra`, on purpose — it doesn't know whether a raw
+`observation.state` value is a joint angle, an end-effector position, or
+something else, any more than it knows an action dimension's semantics.
+So there's a second correspondence problem, symmetric to
+`ActionTargetSpec`'s: not "what does this action dimension predict" but
+"what does this raw state value mean." `mekiki.state`
+(`StateField`/`StateFieldSpec`/`reconstruct_proprioception`) solves it the
+same way — a caller-supplied, explicit, per-element mapping, never
+inferred from a column name or shape.
+
+Kept out of both `mekiki.episode` (the stable M1 core) and
+`mekiki.checks.consistency` (M3-specific): turning generic `extra` data
+into structured fields is useful to *any* check that wants real
+position/orientation/gripper/joint data, not just this one — a future
+coverage check (M7) needing "gripper-closed approach angle" hits the exact
+same problem. `mekiki.state` is its own small module for that reason.
+`reconstruct_proprioception` never removes anything from `extra`, even
+for elements it does reconstruct — redundant is fine, silently discarding
+a value the caller didn't explicitly ask to keep is not.
+
+**Scope: `gripper` and `joint` only. `position_axis` and `orientation_axis`
+both raise `NotImplementedError` — not just orientation.** The reason is
+`Pose`: it bundles position and orientation as one required unit (see
+`docs/episode.md`), so a `position_axis` reconstruction can't produce a
+valid `Pose` without *also* having an orientation to put in it. And
+orientation reconstruction has its own, separate blocker: a raw
+orientation encoding (Euler angle order, axis-angle, already-a-quaternion)
+is genuinely dataset-specific, and guessing it would be exactly the kind
+of assumption this project refuses to make elsewhere (the same reason
+absolute-mode orientation actions aren't supported above). Until that
+encoding question gets its own real design treatment, `ee_poses`
+reconstruction — position included — stays out of scope, even though
+position by itself has no ambiguity at all. `gripper` and `joint` values
+have no such dependency (a scalar is just a scalar), so those work today.

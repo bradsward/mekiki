@@ -59,4 +59,16 @@ Implementing `predict_next_proprioception` against `docs/consistency.md` surface
 
 Both directions (tighter validation, narrower supported scope) were chosen over the alternative of silently accepting something under-specified — consistent with the project's fail-loud-over-guess default everywhere else.
 
+## 2026-09-15 — state-correspondence: reader-side caller-supplied mapping (`mekiki.state`), not left to users
+
+Previous session's open question: M3 has no path to real data since `mekiki.readers.lerobot` never populates `ee_poses`/`joint_positions`/`grippers`. Went with adding `mekiki.state` (`StateField`/`StateFieldSpec`/`reconstruct_proprioception`) rather than treating this as each user's own problem, because it's not actually a new direction — it's the exact same pattern already used for `ActionSpaceSpec`, `ActionTargetSpec`, `nominal_hz`, and `ToleranceModel`: an explicit, caller-declared mapping, never inferred by mekiki. Leaving it to users would mean the same correspondence problem gets solved ad hoc, differently, by everyone who wants to use M3 on real data, with no shared, validated, typed way to do it.
+
+Kept in a new top-level module (`mekiki.state`), not `mekiki.episode` (the stable M1 core) and not `mekiki.checks.consistency` (M3-specific): turning raw `extra` into structured fields is useful to any future check wanting real position/gripper/joint data — a coverage check (M7) needing "gripper-closed approach angle" hits the identical problem. No reason to couple it to M3 specifically.
+
+**Found while implementing, before it became a bug: `position_axis` state reconstruction is blocked too, not only `orientation_axis`.** `mekiki.episode.Pose` requires both `position` and `orientation` — there's no way to construct one with only position known, and defaulting the missing orientation to identity would have been exactly the fabrication this project exists to prevent (and would have silently poisoned any orientation-based check run against the result later). So `mekiki.state` only implements `gripper` and `joint` for now — plain scalars, no such dependency — with `position_axis`/`orientation_axis` both raising `NotImplementedError` and explaining why they're different problems that happen to share one blocker (the orientation-encoding question already parked from the previous session).
+
+`reconstruct_proprioception` never removes anything from `extra`, even values it does reconstruct — chose redundant-but-safe over lossy-but-clean, consistent with `extra` existing specifically as a never-discard bucket.
+
+Verified the whole thing end-to-end against real `bridge_orig_lerobot` data (gripper only, the one implemented quantity with real data available). Result was a real, non-zero, physically-explainable residual (WidowX gripper actuator lag after a close command — checked the raw parquet directly to confirm the pattern), not a fabricated "0 residual, therefore correct" demo. That's the right outcome for this project: the check reports magnitude, a domain-appropriate tolerance decides what's normal.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->
