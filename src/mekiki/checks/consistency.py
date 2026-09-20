@@ -305,16 +305,6 @@ def _predict_orientation(
             f"{specs[0].mode!r} — absolute orientation targets aren't supported yet "
             "(docs/consistency.md v1 scope), only 'delta' is"
         )
-    if specs[0].frame != "ee":
-        raise ValueError(
-            f"orientation_axis delta target for end_effector {end_effector!r} is "
-            f"declared in frame {specs[0].frame!r} — only 'ee' (body-frame) "
-            "orientation deltas are supported so far. A same-frame (world/base) "
-            "orientation delta needs the opposite quaternion composition order "
-            "(pre-multiply, not post-multiply), which docs/consistency.md hasn't "
-            "specified yet — see the parked item in STATE.md rather than guessing "
-            "the composition order here."
-        )
     rotation_vector = np.array([action[axes[axis]] for axis in _AXIS_ORDER], dtype=np.float64)
     current_pose = proprioception.ee_poses.get(end_effector)
     if current_pose is None:
@@ -324,7 +314,19 @@ def _predict_orientation(
             f"ee_poses[{end_effector!r}]"
         )
     delta_q = quaternion_from_rotation_vector(rotation_vector)
-    return quaternion_multiply(current_pose.orientation, delta_q)
+    frame = specs[0].frame
+    if frame == "ee":
+        # body-frame delta: applied about the end-effector's own current axes
+        return quaternion_multiply(current_pose.orientation, delta_q)
+    if frame == current_pose.frame:
+        # fixed/world-frame delta: applied about the fixed axes
+        return quaternion_multiply(delta_q, current_pose.orientation)
+    raise ValueError(
+        f"orientation_axis delta target for end_effector {end_effector!r} is declared "
+        f"in frame {frame!r}, which is neither the state's own frame "
+        f"({current_pose.frame!r}) nor 'ee' — unsupported frame transform, see "
+        "docs/consistency.md"
+    )
 
 
 def _predict_gripper(action_value: float, spec: ActionDimSpec) -> float:

@@ -149,12 +149,27 @@ way it's a precondition for the M2 rate checks).
   `"ee"` per above).
 - **`orientation_axis`, mode `delta`**: the 3 axes form a rotation vector
   (axis = direction, magnitude = angle in radians — the standard
-  small-angle/exponential-map parameterization). Predicted orientation =
-  `q_current ⊗ q_delta`, where `q_delta` is that rotation vector's
-  quaternion exponential. Quaternion composition, not axis-wise addition —
-  orientation isn't Euclidean, and pretending it is would silently produce
-  wrong residuals at exactly the poses where it matters most (rotations
-  near ±180°, gimbal-adjacent configurations).
+  small-angle/exponential-map parameterization), and `q_delta` is that
+  rotation vector's quaternion exponential. Quaternion composition, not
+  axis-wise addition — orientation isn't Euclidean, and pretending it is
+  would silently produce wrong residuals at exactly the poses where it
+  matters most (rotations near ±180°, gimbal-adjacent configurations). The
+  composition order depends on which frame the delta is expressed in, and
+  the two supported frame cases (same list as position, above) are
+  opposite:
+  - action frame `"ee"` (body frame): the delta is applied about the
+    end-effector's own current axes — `q_predicted = q_current ⊗ q_delta`
+    (post-multiply).
+  - action frame equal to the state's own frame (e.g. `base_link`, a
+    fixed/world-frame delta): the delta is applied about the fixed axes —
+    `q_predicted = q_delta ⊗ q_current` (pre-multiply).
+
+  Confusing the two is a silent error, not a crash — both give a valid
+  unit quaternion — and it only shows up as residuals that are wrong
+  whenever the current orientation isn't the identity. Both orders were
+  checked independently against scipy's `Rotation` composition (random
+  orientations and deltas, agreement to ~3e-16), not just derived by hand.
+  Any other frame still fails loudly.
 - **`orientation_axis`, mode `absolute`**: rejected for now, not
   implemented. An absolute 3-value orientation target is ambiguous without
   knowing its encoding (axis-angle? Euler, and in which order?) — that
@@ -223,7 +238,7 @@ already established as reliable by the M2 checks this one depends on.
 ## What v1 explicitly does not cover
 
 - Multi-step rollout comparison (see above — a different, harder problem).
-- Absolute-mode orientation targets (no declared encoding mechanism yet).
+- Absolute-mode orientation *action* targets (the encoding mechanism now exists for state, see below, but is not yet wired into `ActionTarget`).
 - Frame transforms beyond "same frame" and "current-orientation rotation
   from `ee`" — no general extrinsic/calibration-based transforms.
 - Episodes where every action dimension maps to `None` in `ActionTargetSpec`
@@ -256,17 +271,93 @@ same problem. `mekiki.state` is its own small module for that reason.
 for elements it does reconstruct — redundant is fine, silently discarding
 a value the caller didn't explicitly ask to keep is not.
 
-**Scope: `gripper` and `joint` only. `position_axis` and `orientation_axis`
-both raise `NotImplementedError` — not just orientation.** The reason is
-`Pose`: it bundles position and orientation as one required unit (see
-`docs/episode.md`), so a `position_axis` reconstruction can't produce a
-valid `Pose` without *also* having an orientation to put in it. And
-orientation reconstruction has its own, separate blocker: a raw
-orientation encoding (Euler angle order, axis-angle, already-a-quaternion)
-is genuinely dataset-specific, and guessing it would be exactly the kind
-of assumption this project refuses to make elsewhere (the same reason
-absolute-mode orientation actions aren't supported above). Until that
-encoding question gets its own real design treatment, `ee_poses`
-reconstruction — position included — stays out of scope, even though
-position by itself has no ambiguity at all. `gripper` and `joint` values
-have no such dependency (a scalar is just a scalar), so those work today.
+### Orientation encodings (added 2026-09-20)
+
+The blocker for `position_axis`/`orientation_axis` reconstruction, stated
+above, was twofold: `Pose` needs an orientation, and an orientation can't
+be built from raw numbers without knowing how they're encoded. The second
+half is solved the same way as everything else here — the caller declares
+it. `mekiki.rotation.OrientationEncoding` names one of:
+
+- `quaternion_xyzw` — 4 values, already a quaternion.
+- `rotvec` — 3 values, axis × angle in radians.
+- `euler` plus an explicit `euler_sequence` — 3 angles in radians, in
+  scipy's notation: **lowercase means extrinsic** (rotations about fixed
+  axes, first letter applied first), **uppercase means intrinsic**
+  (rotations about the rotating body's own axes); e.g. `"xyz"` is
+  roll-pitch-yaw about fixed axes. There is deliberately no default — the
+  same three numbers under `"xyz"` and `"XYZ"` are different rotations, and
+  a wrong guess yields a plausible-looking, wrong `Pose`.
+
+Euler conversion is a quaternion product of three single-axis rotations
+(`q3 ⊗ q2 ⊗ q1` for extrinsic, `q1 ⊗ q2 ⊗ q3` for intrinsic) and was
+verified against scipy across every valid sequence in both modes (4,800
+random cases, worst component error 2e-16). A `quaternion_xyzw` input whose
+norm is more than `1e-3` from 1 is rejected rather than silently
+renormalized — that's a data problem worth surfacing, not smoothing over.
+
+**Scope, updated: `gripper`, `joint`, and now `ee_poses`.** A state field
+mapping reconstructs an `ee_poses[end_effector]` entry from three
+`position_axis` values plus the `orientation_axis` components of one
+declared encoding, all naming the same `end_effector` and the same
+`frame` (which becomes `Pose.frame`). Position alone is still rejected —
+`Pose` requires both, so a position group with no orientation group for
+the same end-effector (or vice versa) raises rather than fabricating an
+identity orientation. Rejected loudly: mismatched frames within an
+end-effector, an incomplete x/y/z position triple, orientation components
+that aren't exactly `0..n-1` for the declared encoding, mixed encodings.
+
+### Action-side note: rotation vectors versus Euler-angle deltas
+
+An action's `orientation_axis` triple is treated as a rotation vector (see
+the integration rules above). Some datasets store orientation *deltas* as
+differences of Euler angles instead — and those are **not** the same
+quantity, except in the neighborhood of the zero orientation. An Euler-angle
+rate and an angular velocity are related by a state-dependent Jacobian, so
+away from zero the two disagree *to first order*, not merely to second.
+(An earlier draft of this section claimed they agree to first order. That
+was wrong; real data showed it.)
+
+Measured on 25 real `bridge_orig_lerobot` episodes (930 steps): the recorded
+orientation action equals the difference of consecutive recorded Euler
+angles to float32 precision, so it is exactly an Euler difference. Reading
+it as a rotation vector leaves a mean residual of ~0.007 rad against a mean
+per-step rotation of ~0.053 rad (i.e. ~13% of the motion) — real, bounded,
+and much better than predicting no motion, but not zero. A caller declaring
+an Euler-difference action as `orientation_axis` is asserting that
+approximation is acceptable for their tolerance. Modeling such actions
+exactly means adding them in Euler space, which needs the raw Euler triple;
+`Pose` keeps only the quaternion (and converting back is ambiguous across
+Euler branches), so that is parked rather than half-done.
+
+### What a clean result does and doesn't mean
+
+On that same dataset the position action is, to float32 precision, exactly
+the recorded next-state position minus the current one, in the base frame
+(max discrepancy 2e-9 m over all 930 steps). So a correct declaration
+(`base_link`) yields ~zero residual, while the wrong one (`ee`) yields
+~4.5 mm mean residual — the check separates a right frame declaration from
+a wrong one, which is the "wrong frames" failure this milestone exists to
+catch.
+
+But it also means: **when a dataset derived its actions from its recorded
+states, action-state consistency holds by construction and the check has
+nothing to find.** A zero residual there means "consistent", not "the robot
+was independently observed to do what it was commanded". This check catches
+wrong conventions, units, frames, mislabeled or misaligned actions, and
+episodes where the two streams disagree — it cannot catch a robot that
+failed to follow a command when the command was later relabeled from what it
+actually did. Gripper is the contrast: its action is a commanded target, not
+a derived difference, and shows large physical lag residuals (see
+STATE.md).
+
+### Gripper calibration tolerance
+
+A raw gripper column declared to be normalized is accepted if it lies within
+`mekiki.state.GRIPPER_RANGE_TOLERANCE` (0.05) of `[0, 1]` and clipped into
+range in the structured copy — `extra` keeps the raw value. This is data,
+not guesswork: in those 25 episodes **29% of frames read above 1.0**, by up
+to 0.018, which is ordinary sensor-calibration behavior. Rejecting it would
+make real data unusable; loosening `Proprioception`'s own contract would be
+the wrong layer. A value further outside than the tolerance is rejected — it
+means the wrong column or a non-normalized unit.

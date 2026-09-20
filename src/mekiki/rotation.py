@@ -11,6 +11,9 @@ just "looks plausible."
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -79,3 +82,148 @@ def quaternion_angular_distance(q1: NDArray[np.float64], q2: NDArray[np.float64]
     """
     dot = float(np.clip(abs(float(np.dot(q1, q2))), 0.0, 1.0))
     return 2.0 * float(np.arccos(dot))
+
+
+_AXIS_VECTORS = {
+    "x": np.array([1.0, 0.0, 0.0]),
+    "y": np.array([0.0, 1.0, 0.0]),
+    "z": np.array([0.0, 0.0, 1.0]),
+}
+
+#: A quaternion whose norm is further than this from 1 is rejected rather
+#: than silently renormalized — see `orientation_to_quaternion`.
+QUATERNION_NORM_TOLERANCE = 1e-3
+
+
+def _single_axis_quaternion(axis: str, angle: float) -> NDArray[np.float64]:
+    half = angle / 2.0
+    vector = _AXIS_VECTORS[axis.lower()] * np.sin(half)
+    return np.array([vector[0], vector[1], vector[2], np.cos(half)], dtype=np.float64)
+
+
+def _validate_euler_sequence(sequence: str) -> None:
+    if len(sequence) != 3 or any(c not in "xyzXYZ" for c in sequence):
+        raise ValueError(f"euler sequence must be three axis letters from x/y/z, got {sequence!r}")
+    if not (sequence.islower() or sequence.isupper()):
+        raise ValueError(
+            f"euler sequence {sequence!r} mixes cases — use all lowercase for extrinsic "
+            "(fixed-axis) rotations or all uppercase for intrinsic (body-axis) ones"
+        )
+    lowered = sequence.lower()
+    if lowered[0] == lowered[1] or lowered[1] == lowered[2]:
+        raise ValueError(
+            f"euler sequence {sequence!r} repeats an axis on consecutive rotations, "
+            "which isn't a valid three-angle parameterization"
+        )
+
+
+def quaternion_from_euler(angles: NDArray[np.float64], sequence: str) -> NDArray[np.float64]:
+    """Unit quaternion for three Euler angles, in scipy's notation.
+
+    Args:
+        angles: Three angles in radians, in the order named by ``sequence``.
+        sequence: Three axis letters. **Lowercase is extrinsic** — rotations
+            about the fixed axes, the first letter's rotation applied first
+            (so ``"xyz"`` is roll about fixed x, then pitch about fixed y,
+            then yaw about fixed z). **Uppercase is intrinsic** — each
+            rotation about the axes of the body as already rotated. Mixed
+            case, a wrong length, and consecutive repeated axes are
+            rejected. There is no default: the same three angles under
+            ``"xyz"`` and ``"XYZ"`` are different rotations.
+
+    Returns:
+        The unit quaternion ``(x, y, z, w)``. Verified against scipy's
+        ``Rotation.from_euler`` for every valid sequence in both modes.
+
+    Raises:
+        ValueError: ``sequence`` is invalid, or ``angles`` doesn't have
+            exactly three values.
+    """
+    _validate_euler_sequence(sequence)
+    if angles.shape != (3,):
+        raise ValueError(f"euler angles must have shape (3,), got {angles.shape}")
+    q1, q2, q3 = (
+        _single_axis_quaternion(axis, float(angle))
+        for axis, angle in zip(sequence, angles, strict=True)
+    )
+    if sequence.islower():  # extrinsic
+        return quaternion_multiply(q3, quaternion_multiply(q2, q1))
+    return quaternion_multiply(q1, quaternion_multiply(q2, q3))  # intrinsic
+
+
+@dataclass(frozen=True, slots=True)
+class OrientationEncoding:
+    """How a run of raw numbers encodes an orientation — always declared by
+    the caller, never inferred (docs/consistency.md, "Orientation encodings").
+
+    Attributes:
+        kind: ``"quaternion_xyzw"`` (4 values, already a quaternion),
+            ``"rotvec"`` (3 values, axis times angle, in radians), or
+            ``"euler"`` (3 angles in radians, needs ``euler_sequence``).
+        euler_sequence: Required for, and only allowed with, ``"euler"`` —
+            scipy-style sequence, lowercase extrinsic / uppercase intrinsic
+            (see `quaternion_from_euler`).
+    """
+
+    kind: Literal["quaternion_xyzw", "rotvec", "euler"]
+    euler_sequence: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind == "euler":
+            if self.euler_sequence is None:
+                raise ValueError(
+                    "an 'euler' orientation encoding requires euler_sequence — there is "
+                    "deliberately no default, the same angles under 'xyz' (extrinsic) "
+                    "and 'XYZ' (intrinsic) are different rotations"
+                )
+            _validate_euler_sequence(self.euler_sequence)
+        elif self.euler_sequence is not None:
+            raise ValueError(
+                f"euler_sequence is only meaningful for an 'euler' encoding, not {self.kind!r}"
+            )
+
+    @property
+    def n_components(self) -> int:
+        """How many raw values this encoding consumes."""
+        return 4 if self.kind == "quaternion_xyzw" else 3
+
+
+def orientation_to_quaternion(
+    values: NDArray[np.float64], encoding: OrientationEncoding
+) -> NDArray[np.float64]:
+    """Convert raw orientation numbers to a unit quaternion ``(x, y, z, w)``.
+
+    Args:
+        values: Exactly ``encoding.n_components`` raw values.
+        encoding: How ``values`` are encoded — caller-declared.
+
+    Returns:
+        A unit quaternion.
+
+    Raises:
+        ValueError: ``values`` has the wrong length; or a
+            ``"quaternion_xyzw"`` input's norm is more than
+            `QUATERNION_NORM_TOLERANCE` from 1. That's rejected instead of
+            being renormalized because a materially non-unit quaternion in a
+            recorded dataset is a data problem worth surfacing, not
+            smoothing over; within tolerance it is renormalized to absorb
+            float32 storage error.
+    """
+    if values.shape != (encoding.n_components,):
+        raise ValueError(
+            f"a {encoding.kind!r} orientation needs {encoding.n_components} values, "
+            f"got shape {values.shape}"
+        )
+    if encoding.kind == "quaternion_xyzw":
+        norm = float(np.linalg.norm(values))
+        if abs(norm - 1.0) > QUATERNION_NORM_TOLERANCE:
+            raise ValueError(
+                f"quaternion has norm {norm:.6f}, more than {QUATERNION_NORM_TOLERANCE} "
+                "from 1 — not silently renormalized, this looks like a data problem"
+            )
+        result: NDArray[np.float64] = values / norm
+        return result
+    if encoding.kind == "rotvec":
+        return quaternion_from_rotation_vector(values)
+    assert encoding.euler_sequence is not None  # guaranteed by __post_init__
+    return quaternion_from_euler(values, encoding.euler_sequence)

@@ -13,6 +13,7 @@ from mekiki.checks.consistency import (
     validate_action_target_spec,
 )
 from mekiki.episode import ActionDimSpec, Episode, EpisodeMetadata, Frame, Pose, Proprioception
+from mekiki.rotation import quaternion_to_rotation_matrix as _quaternion_to_matrix
 from tests.conftest import CLEAN_ACTION_SPACE
 
 _POSITION_ACTION_SPACE = (
@@ -425,20 +426,53 @@ def test_orientation_absolute_mode_raises() -> None:
         predict_next_proprioception(proprio, action, action_space, target_spec)
 
 
-def test_orientation_delta_non_ee_frame_raises_with_parked_explanation() -> None:
+def _orientation_delta_setup(delta_frame: str) -> tuple[tuple, tuple]:
     action_space = (
-        ActionDimSpec("rx", "delta", "rad", "base_link"),
-        ActionDimSpec("ry", "delta", "rad", "base_link"),
-        ActionDimSpec("rz", "delta", "rad", "base_link"),
+        ActionDimSpec("rx", "delta", "rad", delta_frame),
+        ActionDimSpec("ry", "delta", "rad", delta_frame),
+        ActionDimSpec("rz", "delta", "rad", delta_frame),
     )
     target_spec = (
         ActionTarget(kind="orientation_axis", end_effector="ee", axis="x"),
         ActionTarget(kind="orientation_axis", end_effector="ee", axis="y"),
         ActionTarget(kind="orientation_axis", end_effector="ee", axis="z"),
     )
-    proprio = _proprio_with_ee()
-    action = np.array([0.0, 0.0, 0.0])
-    with pytest.raises(ValueError, match="opposite quaternion composition order"):
+    return action_space, target_spec
+
+
+def test_orientation_delta_in_the_states_own_frame_pre_multiplies() -> None:
+    # Current orientation: 90deg about x. Delta: 90deg about z, expressed in
+    # the state's own (fixed) frame -> R_new = Rz(90) @ Rx(90).
+    # Hand-worked: Rx(90) e_x = e_x, then Rz(90) e_x = e_y, so R_new e_x = e_y.
+    half = np.pi / 4
+    qx90 = np.array([np.sin(half), 0.0, 0.0, np.cos(half)])
+    action_space, target_spec = _orientation_delta_setup("base_link")
+    proprio = _proprio_with_ee(orientation=qx90, frame="base_link")
+    action = np.array([0.0, 0.0, np.pi / 2])
+    result = predict_next_proprioception(proprio, action, action_space, target_spec)
+    rotated_ex = _quaternion_to_matrix(result.ee_orientations["ee"]) @ np.array([1.0, 0.0, 0.0])
+    assert rotated_ex == pytest.approx([0.0, 1.0, 0.0], abs=1e-9)
+
+
+def test_same_delta_in_the_body_frame_post_multiplies_and_gives_a_different_answer() -> None:
+    # Identical current orientation and delta as above, but expressed in the
+    # end-effector's own frame -> R_new = Rx(90) @ Rz(90).
+    # Hand-worked: Rz(90) e_x = e_y, then Rx(90) e_y = e_z, so R_new e_x = e_z.
+    half = np.pi / 4
+    qx90 = np.array([np.sin(half), 0.0, 0.0, np.cos(half)])
+    action_space, target_spec = _orientation_delta_setup("ee")
+    proprio = _proprio_with_ee(orientation=qx90, frame="base_link")
+    action = np.array([0.0, 0.0, np.pi / 2])
+    result = predict_next_proprioception(proprio, action, action_space, target_spec)
+    rotated_ex = _quaternion_to_matrix(result.ee_orientations["ee"]) @ np.array([1.0, 0.0, 0.0])
+    assert rotated_ex == pytest.approx([0.0, 0.0, 1.0], abs=1e-9)
+
+
+def test_orientation_delta_in_an_unrecognized_frame_raises() -> None:
+    action_space, target_spec = _orientation_delta_setup("wrist_camera")
+    proprio = _proprio_with_ee(frame="base_link")
+    action = np.array([0.0, 0.0, 0.1])
+    with pytest.raises(ValueError, match="unsupported frame transform"):
         predict_next_proprioception(proprio, action, action_space, target_spec)
 
 
