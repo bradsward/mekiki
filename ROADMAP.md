@@ -35,6 +35,8 @@ reorder whenever, don't delete anything without a note in [DECISIONS.md](DECISIO
       - [ ] Euler-space orientation actions (exact rather than the rotation-vector approximation) — needs the raw Euler triple kept alongside `Pose`; parked, see STATE.md
       - [ ] absolute-mode orientation action targets (encoding mechanism exists, not yet wired into `ActionTarget`)
 - [ ] M4 — idle + segmentation. hesitation, pre-motion dead time, post-task dwell. report recoverable fraction per episode.
+      - [x] idle time: `mekiki.checks.idle.analyze_idle_time` + `docs/idle.md`. declared per-channel speed thresholds, leading / interior / trailing segments, recoverable fraction, peak speeds. checked on bridge and all of pusht.
+      - [ ] phase segmentation (approach / grasp / transport / release). needs its own design pass, gripper-event based to start.
 - [ ] M5 — report + CLI. `mekiki audit`, `mekiki report`. per-episode scorecards + corpus summary.
 - [ ] M6 — visual checks. dead/frozen streams, occlusion, exposure failure, camera drift. classical CV only, no learned models in core.
 - [ ] M7 — coverage analysis (the other flagship). embed the state-action space, estimate density, report sparse regions in plain language.

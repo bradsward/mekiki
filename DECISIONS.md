@@ -98,4 +98,14 @@ Decisions inside it:
 
 This stays a data-quality description. It doesn't judge whether a derived action is bad, only reports that it looks derived, and why that matters (consistency checks on it are vacuous). No verdicts, nothing a pipeline could gate on.
 
+## 2026-09-20 — idle time: thresholds are declared per channel, and "recoverable" only counts the ends
+
+Same rule as everything else: nothing is inferred. "Idle" needs a speed threshold and there is no universal one (2 mm/s is still during an insertion and dead time for a pick and place), so the caller declares motion channels with thresholds in real units, and an interval is idle only when every channel is at or below its threshold. Requiring all channels is deliberate, a gripper closing on a stopped arm isn't dead time. Inferring the threshold from the episode's own speeds was rejected: it labels slow datasets idle everywhere and fast ones never.
+
+`recoverable_fraction` is leading plus trailing only. Interior pauses are reported separately and never counted as recoverable, since cutting them changes the trajectory and they can be contact, waiting on a gripper, or the operator thinking. That's a description, not a trim recommendation, the filtering decision belongs to M9's policy.
+
+Real data made the case for carrying thresholds and peak speeds in every result: on Bridge and PushT the interior idle share goes from about 0 to a third of an episode purely by moving the threshold, and a tight three-channel declaration (5 mm/s position, 0.02 rad/s orientation, a gripper rate) found no idle at all on Bridge, because orientation was that still on only 1.2% of steps (median 0.2 rad/s). Both would look like real findings without the threshold and peak speed next to them. Also found the public sets are already trimmed (leading dead time about 0%), so the "recoverable" number will mostly matter on less curated data.
+
+Non-positive timestamp steps raise rather than yield inf or negative speeds. M2 owns timestamp sanity, this just refuses to build on it when it's broken.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->
