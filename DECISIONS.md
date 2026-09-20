@@ -85,4 +85,17 @@ Rotation math was verified against an independent implementation rather than tru
 2. **Gripper overshoot.** 29% of real frames read above 1.0 (max +0.018), which crashed reconstruction against `Proprioception`'s strict `[0, 1]` contract. Fixed at the reconstruction boundary — clip within `GRIPPER_RANGE_TOLERANCE` (0.05, chosen from that data), reject beyond it as a wrong-column/unit signal, raw value stays in `extra` — rather than loosening the core type, whose contract is right; the boundary where a caller *declares* a column normalized is where sensor noise should be absorbed.
 3. **Consistency holds by construction when actions are derived from states.** Bridge's position and orientation actions are the recorded next-state minus current to float32 precision, so the check finds nothing there — but it *does* distinguish a right frame declaration (~0) from a wrong one (~4.5 mm), which is the "wrong frames" failure it exists to catch. Recorded in the doc so a zero residual isn't over-read as independent verification.
 
+## 2026-09-20 — provenance audit infers from data, but only ever proposes
+
+Everything else in mekiki is declared by the caller and never inferred. The provenance audit is the one place that goes the other way: given actions and a raw state array, it works out which state dimension each action dimension resembles. Kept it anyway because the whole point is that datasets don't say whether an action was commanded or computed from the recorded states (Bridge V2 does both in one vector), and the question can only be answered from the data. The line I held: the output is a hypothesis with evidence (rho at every lag, identity fraction, margin over the runner-up) for someone to read and encode in an `ActionTargetSpec` themselves. Nothing consumes it automatically, and none of the checks change behavior because of it.
+
+Decisions inside it:
+
+- Rank correlation, not Pearson, so a few wrapped angles don't hide a relationship. Then the tie problem: a binary gripper against a continuous state can't reach rho 0.9 even when perfectly monotone (ceiling sqrt(3)/2), so rho is divided by the ceiling the ties allow. Ordinary Spearman is unchanged when there are no ties. Caught by a synthetic gripper test, not by reasoning ahead of time.
+- Only an *exact* match at a non-zero lag is called misaligned. A command followed through actuator lag peaks at a positive lag on its own; calling that a bug would be a false alarm on the most normal thing a gripper does. An action equal to a shifted state difference to float precision has no dynamics explanation.
+- For non-exact results the delta/level label isn't reliable for a commanded target (a robot moving toward a target correlates with both). Documented instead of pretending otherwise; lag and identity fraction are the trustworthy parts.
+- Pairs never cross episode boundaries, and it reads at most `max_episodes` (default 200) since it holds pairs in memory. Sampling, and the cap is the caller's.
+
+This stays a data-quality description. It doesn't judge whether a derived action is bad, only reports that it looks derived, and why that matters (consistency checks on it are vacuous). No verdicts, nothing a pipeline could gate on.
+
 <!-- log IP-BOUNDARY here whenever a session drifts toward CI gating, verdicts, or safety-eval territory and gets reverted -->
